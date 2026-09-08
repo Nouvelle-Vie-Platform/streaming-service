@@ -47,6 +47,14 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Sans cela, buildx joint à l'image des manifestes d'attestation
+          # (provenance, SBOM) et publie un index multi-manifestes. Le Docker du
+          # VPS échoue à les récupérer : « failed commit on ref
+          # attestation-sha256:… : lease does not exist ». Le déploiement s'arrête
+          # alors au `docker pull`, avant toute modification — mais il s'arrête.
+          # Ces attestations n'ont aucun usage dans ce déploiement.
+          provenance: false
+          sbom: false
 
       - name: Deploy (SSH)
         uses: appleboy/ssh-action@v1
