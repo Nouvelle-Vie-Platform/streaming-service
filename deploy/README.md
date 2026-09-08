@@ -29,7 +29,11 @@ encodage ffmpeg s'achève au lieu d'être tué au milieu et rejoué depuis le d�
 ## Installation (une seule fois)
 
 ```bash
+# Le dossier appartient à `deploy` : deploy.sh y écrit `.env`, `.env.previous` et
+# `active_color` à chaque bascule. Root-owned, `sed -i` et le script échouent.
 sudo mkdir -p /opt/eenv-stream
+sudo chown deploy:deploy /opt/eenv-stream
+sudo chmod 750 /opt/eenv-stream
 sudo install -o deploy -g deploy -m 644 docker-compose.yml /opt/eenv-stream/
 sudo install -o root   -g root   -m 755 deploy.sh         /opt/eenv-stream/
 sudo install -o root   -g root   -m 755 ssh_command.sh   /opt/eenv-stream/
