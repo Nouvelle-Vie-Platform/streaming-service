@@ -15,7 +15,8 @@ const redisConfig = defineConfig({
       host: env.get('REDIS_HOST'),
       port: env.get('REDIS_PORT'),
       password: env.get('REDIS_PASSWORD', ''),
-      db: 0,
+      // Shared host: keep in step with the portal's REDIS_DB (see start/env.ts).
+      db: env.get('REDIS_DB', 0),
       keyPrefix: '',
       retryStrategy(times) {
         return times > 10 ? null : times * 50

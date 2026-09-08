@@ -62,6 +62,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ffmpeg est la dépendance centrale de ce service, pas un détail : la suite
+      # comporte un test qui fait un VRAI passage d'encodage (ADR-0009). Sans lui,
+      # ce test échoue en `spawn ffmpeg ENOENT` et la CI est rouge en permanence —
+      # ce qu'elle était depuis le 21 août. Une CI durablement rouge ne signale
+      # plus rien : on cesse de la lire, et la vraie régression passe avec.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24
