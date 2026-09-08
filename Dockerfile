@@ -44,6 +44,17 @@ RUN mkdir -p /app/storage && chown -R node:node /app
 USER node
 
 EXPOSE 3333
+
+# Internal probe read by `docker inspect .State.Health.Status`, which `deploy.sh` uses as its first
+# green light before flipping Caddy. It hits `/health` — which actually exercises Postgres, Redis
+# and RustFS — rather than `/`, which answers "It works!" from memory.
+#
+# Roles that are not the HTTP server (worker, migrations) override CMD and expose no port; the
+# compose file disables this probe for them, since a container with no listener would otherwise be
+# permanently unhealthy.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3333)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
 ENTRYPOINT ["/usr/bin/tini", "--"]
 # Overridden per role in docker-compose (server / worker / migrate).
 CMD ["node", "bin/server.js"]

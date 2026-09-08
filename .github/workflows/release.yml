@@ -33,8 +33,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # GHCR force les minuscules : hls-streaming-service
-          images: ghcr.io/gontran-anson/hls-streaming-service
+          images: ghcr.io/nouvelle-vie-platform/streaming-service
           tags: |
             type=ref,event=tag
             type=raw,value=latest
@@ -56,4 +55,8 @@ jobs:
           port: ${{ secrets.VPS_PORT }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          script: /opt/newlife/flip-stream.sh ${{ github.ref_name }}
+      # Le garde-barrière SSH côté VPS (`ssh_commande.sh`, commande forcée dans
+      # authorized_keys) n'accepte QUE cette forme : le chemin exact du script suivi
+      # d'une référence d'image de CE dépôt. On passe donc l'image complète, pas le
+      # seul tag — une clé volée ne peut ainsi déployer aucune autre image.
+          script: /opt/eenv-stream/deploy.sh ghcr.io/nouvelle-vie-platform/streaming-service:${{ github.ref_name }}

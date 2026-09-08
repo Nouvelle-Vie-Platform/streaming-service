@@ -16,6 +16,9 @@ export const queueConnection: ConnectionOptions = {
   port: env.get('REDIS_PORT'),
   // Empty string in .env means "no auth" — don't send an empty AUTH.
   password: env.get('REDIS_PASSWORD') || undefined,
+  // The queue lives in the same logical database as everything else this service writes; leaving
+  // it on 0 while the rest moved would scatter a single service across two key spaces.
+  db: env.get('REDIS_DB', 0),
 }
 
 /**

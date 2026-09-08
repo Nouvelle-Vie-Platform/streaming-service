@@ -1,0 +1,117 @@
+# ==============================================================================
+# Déploiement blue/green du service de streaming — Nouvelle Vie Togo.
+#
+# Une couleur = DEUX conteneurs : le serveur HTTP et son worker de transcodage.
+# Ils partagent l'image et l'environnement ; seul le rôle (`command`) les
+# distingue. Le worker suit la couleur pour que le code qui encode soit toujours
+# exactement celui de l'API qui a accepté le fichier.
+#
+# Faire tourner brièvement les deux couleurs est SANS DANGER : BullMQ verrouille
+# chaque job sur un seul worker, deux workers se partagent la file sans jamais
+# traiter le même fichier.
+#
+# Postgres, Redis et RustFS sont EXTERNES : ce stack n'en démarre aucun, il les
+# rejoint par leurs réseaux Docker existants. Caddy est également hors de ce
+# stack — il tourne sur l'hôte.
+#
+# Ce fichier vit sur le VPS dans /opt/eenv-stream/ aux côtés de :
+#   .env        → STREAM_IMAGE (écrit par deploy.sh)
+#   app.env     → l'environnement du service (secrets) — jamais dans l'image
+#   deploy.sh   → l'orchestrateur de la bascule
+# ==============================================================================
+
+name: eenv-stream
+
+x-stream: &stream
+  image: ${STREAM_IMAGE:?STREAM_IMAGE absent — deploy.sh doit l'écrire dans .env}
+  env_file:
+    - app.env
+  restart: unless-stopped
+  # tini est déjà l'ENTRYPOINT de l'image ; `init` ajoute la récolte des zombies
+  # laissés par les processus ffmpeg engendrés à chaque job.
+  init: true
+  networks:
+    - postgres
+    - redis
+    - rustfs
+  logging:
+    driver: json-file
+    options:
+      max-size: '10m'
+      max-file: '3'
+
+services:
+  # --------------------------------------------------------------------------
+  # Serveurs HTTP — une couleur active, l'autre en attente.
+  # --------------------------------------------------------------------------
+  blue:
+    <<: *stream
+    container_name: eenv-stream-blue
+    command: ['node', 'bin/server.js']
+    ports:
+      - '127.0.0.1:3002:3333'
+    # Laisse finir les requêtes en cours et les flux SSE (`/__transmit/*`) avant
+    # le SIGKILL. Doit rester >= au DRAIN_SECONDS de deploy.sh (120 s).
+    stop_grace_period: 150s
+
+  green:
+    <<: *stream
+    container_name: eenv-stream-green
+    command: ['node', 'bin/server.js']
+    ports:
+      - '127.0.0.1:3003:3333'
+    stop_grace_period: 150s
+
+  # --------------------------------------------------------------------------
+  # Workers — un par couleur. Ils n'ouvrent aucun port : la sonde HTTP de l'image
+  # les déclarerait « unhealthy » à perpétuité, on la désactive donc ici.
+  #
+  # `stop_grace_period: 600s` : à la réception de SIGTERM, la commande
+  # `transcode:work` appelle `worker.close()` sur ses trois files (transcode,
+  # webhook, archive), ce qui ATTEND la fin du job en cours. Un encodage ffmpeg
+  # d'un long enseignement doit pouvoir s'achever plutôt que d'être tué au milieu
+  # et rejoué depuis le début. Le prix : un déploiement lancé pendant un
+  # transcodage peut attendre jusqu'à dix minutes — sans jamais couper le site.
+  # --------------------------------------------------------------------------
+  worker-blue:
+    <<: *stream
+    container_name: eenv-stream-worker-blue
+    command: ['node', 'ace.js', 'transcode:work']
+    stop_grace_period: 600s
+    healthcheck:
+      disable: true
+
+  worker-green:
+    <<: *stream
+    container_name: eenv-stream-worker-green
+    command: ['node', 'ace.js', 'transcode:work']
+    stop_grace_period: 600s
+    healthcheck:
+      disable: true
+
+  # --------------------------------------------------------------------------
+  # Rôles ponctuels — profil dédié, lancés par deploy.sh via `run --rm`.
+  # --------------------------------------------------------------------------
+
+  # Migrations jouées avec la NOUVELLE image, avant la bascule. Les deux couleurs
+  # partagent le même schéma : toute migration doit rester compatible avec le
+  # code précédent (on ajoute, on ne supprime ni ne renomme dans le même coup).
+  migrations:
+    <<: *stream
+    profiles: [outils]
+    restart: 'no'
+    stop_grace_period: 30s
+    healthcheck:
+      disable: true
+    command: ['node', 'ace.js', 'migration:run', '--force']
+
+networks:
+  postgres:
+    external: true
+    name: postgres_default
+  redis:
+    external: true
+    name: redis_default
+  rustfs:
+    external: true
+    name: rustfs_default

@@ -38,6 +38,14 @@ export default await Env.create(new URL('../', import.meta.url), {
   REDIS_HOST: Env.schema.string({ format: 'host' }),
   REDIS_PORT: Env.schema.number(),
   REDIS_PASSWORD: Env.schema.string.optional(),
+  /*
+  | Logical Redis database index. Optional, defaults to `0`. Redis gives no isolation between
+  | applications: on a host shared with other projects every key lands in the same space, where one
+  | project's `FLUSHDB` wipes another's queue. The index separates them — and **must match the
+  | portal's `REDIS_DB`**, whose progress reads target the same keys. Pub/sub (`pipeline:events`)
+  | is unaffected either way: Redis delivers channels across databases.
+  */
+  REDIS_DB: Env.schema.number.optional(),
   WORKER_CONCURRENCY: Env.schema.number.optional(),
 
   /*

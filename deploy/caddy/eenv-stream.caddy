@@ -1,0 +1,74 @@
+# ==============================================================================
+# Bloc à AJOUTER dans /etc/caddy/Caddyfile du VPS — ne remplace rien.
+#
+# Le fichier importé `eenv-stream-upstream.caddy` contient UNE seule ligne, que
+# deploy.sh réécrit à chaque bascule :
+#
+#   reverse_proxy 127.0.0.1:3002     (bleu)   ou   127.0.0.1:3003   (vert)
+#
+# Il doit appartenir à `deploy` pour être écrit sans root :
+#   sudo install -o deploy -g deploy -m 644 /dev/null /etc/caddy/eenv-stream-upstream.caddy
+#
+# ⚠️ AUCUN `encode` au niveau du site — voir le bloc /dl/* plus bas.
+# ==============================================================================
+
+stream.eenv.brainsial.com {
+
+	# La sonde de déploiement reste interne : deploy.sh et Docker interrogent
+	# 127.0.0.1:3002 directement, sans passer par Caddy.
+	handle /health {
+		respond 404
+	}
+
+	# --------------------------------------------------------------------------
+	# Playlists et segments HLS — servis DIRECTEMENT depuis RustFS, jamais par
+	# Node (ADR-0006). `handle` conserve le chemin entier ; on préfixe le bucket
+	# pour l'accès S3 « path-style », le seul que comprenne un magasin
+	# auto-hébergé (il n'a pas de DNS par bucket).
+	#
+	# L'URL publiée en base est `<HLS_PUBLIC_BASE_URL>/hls/<id>/master.m3u8` : ce
+	# domaine est donc écrit en dur dans chaque enseignement transcodé, et ne peut
+	# plus changer sans migration.
+	# --------------------------------------------------------------------------
+	handle /hls/* {
+		header {
+			Access-Control-Allow-Origin *
+			Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+			Access-Control-Allow-Headers "Range, Content-Type"
+			Access-Control-Expose-Headers "Content-Length, Content-Range, Accept-Ranges, ETag"
+		}
+		@preflight method OPTIONS
+		respond @preflight 204
+		rewrite * /eenv-streaming{uri}
+		reverse_proxy http://127.0.0.1:9000
+	}
+
+	# --------------------------------------------------------------------------
+	# Téléchargements progressifs `.aac` (ADR-0009) — servis depuis RustFS comme
+	# le HLS. `reverse_proxy` est transparent pour Range et ETag.
+	#
+	# ⚠️ NE JAMAIS ajouter `encode` ici, ni au niveau du site : compresser ces
+	# octets casse la reprise de téléchargement par plage (spike #184). C'est la
+	# raison pour laquelle la compression est déclarée dans le seul bloc
+	# fourre-tout ci-dessous, et non en tête de site.
+	# --------------------------------------------------------------------------
+	handle /dl/* {
+		header {
+			Access-Control-Allow-Origin *
+			Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+			Access-Control-Allow-Headers "Range, Content-Type"
+			Access-Control-Expose-Headers "Content-Length, Content-Range, Accept-Ranges, ETag"
+		}
+		@preflight method OPTIONS
+		respond @preflight 204
+		rewrite * /eenv-streaming{uri}
+		reverse_proxy http://127.0.0.1:9000
+	}
+
+	# Dépôt, ingestion par URL, statut, SSE (/__transmit/*) → le service.
+	# La compression est portée ICI, et nulle part ailleurs.
+	handle {
+		encode zstd gzip
+		import /etc/caddy/eenv-stream-upstream.caddy
+	}
+}
