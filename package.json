@@ -67,7 +67,8 @@
   "overrides": {
     "@boringnode/bus": {
       "ioredis": "$ioredis"
-    }
+    },
+    "jsonschema": "1.4.1"
   },
   "hotHook": {
     "boundaries": [

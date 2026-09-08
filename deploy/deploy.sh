@@ -76,11 +76,38 @@ wait_healthy() {
   return 1
 }
 
-# Le worker doit tourner : un conteneur arrêté ou en boucle de redémarrage vide
-# la file sans rien encoder, et personne ne s'en aperçoit avant qu'un dépôt reste
-# indéfiniment « en cours ».
-worker_running() {
-  [ "$(docker inspect -f '{{.State.Running}}' "eenv-stream-worker-$1" 2>/dev/null || echo false)" = 'true' ]
+# Combien de temps on observe le worker avant de le croire vivant.
+WORKER_SETTLE="${WORKER_SETTLE:-15}"
+
+# L'état lisible d'un worker, pour `status`. Trois cas, et le troisième est le
+# piège : un conteneur qui plante et redémarre en boucle est « Running » la
+# plupart du temps — Docker le relance aussitôt.
+worker_state() {
+  local c="eenv-stream-worker-$1"
+  docker inspect "$c" >/dev/null 2>&1 || { echo 'absent'; return; }
+  case "$(docker inspect -f '{{.State.Restarting}}/{{.State.Running}}' "$c")" in
+    true/*)  echo 'redémarre en boucle' ;;
+    */true)  echo 'en marche' ;;
+    *)       echo 'arrêté' ;;
+  esac
+}
+
+# Le verrou avant bascule. Regarder `.State.Running` à un instant donné ne prouve
+# RIEN : entre deux plantages, un worker en boucle de redémarrage est « Running »,
+# et le test tombe presque toujours sur un de ces intervalles. C'est exactement ce
+# qui s'est produit à l'installation — la bascule a été autorisée alors que le
+# worker mourait à chaque démarrage.
+#
+# On compare donc le compteur de redémarrages à quelques secondes d'intervalle :
+# un worker sain ne redémarre pas, un worker en boucle incrémente. C'est le seul
+# signal qui distingue « vivant » de « en train de mourir en rythme ».
+worker_stable() {
+  local c="eenv-stream-worker-$1" before after
+  docker inspect "$c" >/dev/null 2>&1 || return 1
+  before="$(docker inspect -f '{{.RestartCount}}' "$c")"
+  sleep "$WORKER_SETTLE"
+  after="$(docker inspect -f '{{.RestartCount}}' "$c")"
+  [ "$before" = "$after" ] && [ "$(worker_state "$1")" = 'en marche' ]
 }
 
 # Réécrit l'unique ligne importée par le bloc du site, valide la configuration
@@ -136,14 +163,15 @@ deploy() {
   # Le serveur peut être sain alors que le worker s'est écroulé au démarrage :
   # ils ne partagent que l'image, pas le sort. Basculer sans worker donnerait un
   # service qui accepte les fichiers et n'en encode aucun.
-  if ! worker_running "$target"; then
-    fail "Le worker $target ne tourne pas — AUCUNE bascule"
+  log "Observation du worker $target (${WORKER_SETTLE}s)"
+  if ! worker_stable "$target"; then
+    fail "Le worker $target ne tient pas — état : $(worker_state "$target") — AUCUNE bascule"
     docker compose logs --tail 60 "worker-$target" >&2 || true
     docker compose stop "$target" "worker-$target" >/dev/null 2>&1 || true
     [ -f "$ROOT_DIR/.env.previous" ] && mv "$ROOT_DIR/.env.previous" "$ROOT_DIR/.env"
     exit 1
   fi
-  ok "Le worker $target consomme la file"
+  ok "Le worker $target tourne sans redémarrer"
 
   log "Bascule du trafic vers $target"
   switch_traffic "$target"
@@ -218,7 +246,7 @@ show_status() {
     printf '%-6s /health → %s\n' "$color" \
       "$(curl -fsS "http://127.0.0.1:$(port_for "$color")/health" 2>/dev/null || echo 'injoignable')"
     printf '%-6s worker  → %s\n' "$color" \
-      "$(worker_running "$color" && echo 'en marche' || echo 'arrêté')"
+      "$(worker_state "$color")"
   done
 }
 
