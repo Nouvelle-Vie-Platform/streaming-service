@@ -110,6 +110,25 @@ worker_stable() {
   [ "$before" = "$after" ] && [ "$(worker_state "$1")" = 'en marche' ]
 }
 
+# GHCR est joignable en IPv4 depuis ce VPS, mais PAS en IPv6 (`curl -6` n'obtient
+# aucune réponse, constaté le 08/09/2026). Docker tente l'IPv6 en premier : la
+# connexion s'établit puis meurt en cours de transfert, et il ne bascule pas
+# assez vite sur l'IPv4. Le second essai, lui, passe.
+#
+# On réessaie donc plutôt que d'abandonner : un déploiement ne doit pas échouer
+# sur un défaut de routage intermittent. Si l'échec devient systématique, la
+# cause est ailleurs et trois tentatives ne la masqueront pas.
+pull_image() {
+  local image="$1" attempt=1
+  while :; do
+    docker pull "$image" && return 0
+    [ "$attempt" -ge 3 ] && return 1
+    warn "Téléchargement échoué (tentative $attempt/3) — nouvel essai dans $((attempt * 10))s"
+    sleep $((attempt * 10))
+    attempt=$((attempt + 1))
+  done
+}
+
 # Réécrit l'unique ligne importée par le bloc du site, valide la configuration
 # COMPLÈTE du VPS (d'autres sites y tournent), puis recharge. Configuration
 # invalide = restauration immédiate : Caddy n'a jamais vu l'erreur.
@@ -138,7 +157,7 @@ deploy() {
   log "Couleur      : ${previous:-aucune} → $target"
 
   log 'Récupération de l’image'
-  docker pull "$image"
+  pull_image "$image" || { fail "Image introuvable ou registre injoignable après 3 tentatives"; exit 1; }
 
   [ -f "$ROOT_DIR/.env" ] && cp "$ROOT_DIR/.env" "$ROOT_DIR/.env.previous"
   printf 'STREAM_IMAGE=%s\n' "$image" > "$ROOT_DIR/.env"
