@@ -13,7 +13,7 @@ concurrency:
 jobs:
   test:
     name: lint · typecheck · test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     services:
       postgres:
@@ -60,7 +60,7 @@ jobs:
       HLS_PUBLIC_BASE_URL: http://localhost:8080
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # ffmpeg est la dépendance centrale de ce service, pas un détail : la suite
       # comporte un test qui fait un VRAI passage d'encodage (ADR-0009). Sans lui,
@@ -73,7 +73,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg
           ffmpeg -version | head -1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
