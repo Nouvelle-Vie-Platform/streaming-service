@@ -24,6 +24,23 @@ import logger from '@adonisjs/core/services/logger'
  * Elle n'échoue jamais non plus : `performance.now()` ne lève pas, et une mesure
  * n'a **aucun** droit de faire échouer le travail qu'elle observe.
  */
+/** Ce que la ligne porte **en plus** des durées, et qui ne se mesure pas. */
+export interface LogContext {
+  /** La durée de l'audio traité, en secondes — le dénominateur du ×temps-réel. */
+  audioSeconds?: number | null
+  /**
+   * `depot` (fichier local) ou `url` (ffmpeg lit la source à distance).
+   *
+   * Sans lui, un `encode` long est ambigu : c'est peut-être le CPU, mais c'est
+   * peut-être le **téléchargement de la source**, qui se fait pendant l'encodage
+   * sur le chemin URL. Deux causes, deux remèdes opposés.
+   *
+   * `archive` est la seconde passe, celle du FLAC : elle porte le même
+   * identifiant de transcodage et sortirait sinon comme un doublon inexplicable.
+   */
+  regime?: 'depot' | 'url' | 'archive'
+}
+
 export class PhaseTimings {
   readonly #started = performance.now()
   readonly #phases: { phase: string; ms: number; detail?: number }[] = []
@@ -63,12 +80,21 @@ export class PhaseTimings {
    * semaine. La passer en `debug` reviendrait à ne jamais la voir en production,
    * c'est-à-dire à n'avoir rien mesuré.
    */
-  log(id: string): void {
+  log(id: string, context: LogContext = {}): void {
     const total = Math.round(performance.now() - this.#started)
+    const audio = context.audioSeconds ?? null
+
     logger.info(
       {
         transcode: id,
         totalMs: total,
+        ...(context.regime ? { regime: context.regime } : {}),
+        ...(audio ? { audioSeconds: Math.round(audio) } : {}),
+        // **Le rapport au temps réel est calculé ici**, et pas laissé à celui
+        // qui lit. « encode : 1006 s » ne dit pas si c'est rapide ou lent ;
+        // « ×6,4 » le dit d'un coup d'œil, et c'est ce chiffre-là qui désigne
+        // un encodage sérialisé sur un seul fil plutôt qu'une machine chargée.
+        ...(audio ? { realtimeFactor: Number((audio / (total / 1000)).toFixed(1)) } : {}),
         phases: Object.fromEntries(
           this.#phases.map(({ phase, ms, detail }) => [
             phase,

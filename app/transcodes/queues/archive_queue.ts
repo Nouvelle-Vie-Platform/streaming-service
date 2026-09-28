@@ -16,7 +16,12 @@ export interface ArchiveJobData {
 /**
  * Producer of the archive/cleanup job. Enqueued by the transcode job **after**
  * COMPLETED, so a RustFS outage here retries independently and never re-encodes
- * (Q18). `jobId = id` keeps it idempotent.
+ * *the HLS* (Q18). `jobId = id` keeps it idempotent.
+ *
+ * ⚠️ **Ce job encode désormais le FLAC lui-même** : il a quitté la passe
+ * principale, qui n'a plus à attendre un fichier de conservation pour déclarer
+ * l'enseignement écoutable. Un rejeu après un envoi refusé ne le ré-encode pas
+ * (le fichier est encore là) ; un rejeu après un échec d'encodage, si.
  */
 export class ArchiveQueue {
   private queue = new Queue<ArchiveJobData>(ARCHIVE_QUEUE, { connection: queueConnection })
