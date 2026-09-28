@@ -16,6 +16,7 @@ import {
   outputPlaylistUrl,
 } from '#transcodes/support/hls'
 import type { DownloadRenditionInfo } from '#transcodes/support/hls'
+import { PhaseTimings } from '#transcodes/support/phase_timing'
 import { inject } from '@adonisjs/core'
 import { existsSync } from 'node:fs'
 
@@ -68,9 +69,14 @@ export class ProcessTranscode {
   async execute(params: ProcessTranscodeParams): Promise<ProcessTranscodeResult> {
     const transcode = await Transcode.findOrFail(params.id)
 
+    // Quatre étapes de natures très différentes — une sonde, un encodage, deux
+    // envois réseau qui font un aller-retour **par fichier** — et rien ne disait
+    // laquelle durait. Voir `PhaseTimings` : on mesure avant d'optimiser.
+    const timings = new PhaseTimings()
+
     let downloads: { name: string; bytes: number }[]
     if (!existsSync(masterPlaylistPath(params.id))) {
-      const probe = await this.transcoder.probe(params.source)
+      const probe = await timings.time('probe', () => this.transcoder.probe(params.source))
       if (!probe.hasAudio) {
         throw new NoAudioTrackException()
       }
@@ -82,21 +88,23 @@ export class ProcessTranscode {
       this.publisher.broadcast(transcode, 0)
 
       let lastPercent = 0
-      const result = await this.transcoder.encode(
-        params.source,
-        params.id,
-        probe.durationSeconds,
-        (percent) => {
-          if (percent > lastPercent) {
-            lastPercent = percent
-            // Best-effort: a Redis hiccup must not fail the encode.
-            void this.progressStore.set(params.id, percent).catch(() => {})
-            this.publisher.broadcast(transcode, percent)
-          }
-        },
-        // A URL source keeps no FLAC archive — the original lives at the URL.
-        // The `.aac` download renditions are produced on both paths (ADR-0009).
-        { withArchive: !params.remote }
+      const result = await timings.time('encode', () =>
+        this.transcoder.encode(
+          params.source,
+          params.id,
+          probe.durationSeconds,
+          (percent) => {
+            if (percent > lastPercent) {
+              lastPercent = percent
+              // Best-effort: a Redis hiccup must not fail the encode.
+              void this.progressStore.set(params.id, percent).catch(() => {})
+              this.publisher.broadcast(transcode, percent)
+            }
+          },
+          // A URL source keeps no FLAC archive — the original lives at the URL.
+          // The `.aac` download renditions are produced on both paths (ADR-0009).
+          { withArchive: !params.remote }
+        )
       )
       downloads = result.downloads
     } else {
@@ -108,8 +116,12 @@ export class ProcessTranscode {
     // Push the HLS *and* the download renditions to RustFS *before* COMPLETED —
     // the client must be able to play/download from the serving origin the moment
     // we say it's ready (Q18). The `.aac` ride their own `dl/<id>/` prefix.
-    await this.rustfs.uploadDirectory(hlsOutputDir(params.id), hlsKeyPrefix(params.id))
-    await this.rustfs.uploadDirectory(downloadOutputDir(params.id), downloadKeyPrefix(params.id))
+    await timings.count('uploadHls', () =>
+      this.rustfs.uploadDirectory(hlsOutputDir(params.id), hlsKeyPrefix(params.id))
+    )
+    await timings.count('uploadDownloads', () =>
+      this.rustfs.uploadDirectory(downloadOutputDir(params.id), downloadKeyPrefix(params.id))
+    )
 
     // Pair each measured byte size with its absolute public URL — the single
     // shape the row, the webhook and the returned result all carry (ADR-0009).
@@ -157,6 +169,12 @@ export class ProcessTranscode {
       source: params.source,
       remote: params.remote,
     })
+
+    // **La mesure est posée ici et pas plus tôt** : après l'archive mise en file,
+    // avant le retour. Plus haut, elle raterait la fin ; dans un `finally`, elle
+    // sortirait aussi sur un échec — et une ligne « terminé » sur un transcodage
+    // qui a échoué est exactement le genre de journal qui trompe à 3 h du matin.
+    timings.log(params.id)
 
     // The download renditions are now on the public origin: hand the caller (#186)
     // each rendition's absolute URL + byte size so it can persist and publish them.

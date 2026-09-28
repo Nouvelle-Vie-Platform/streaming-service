@@ -180,6 +180,35 @@ PENDING ──▶ PROCESSING ──▶ COMPLETED     (master.m3u8 + segments ser
 Les qualités HLS produites : **3 rendus AAC-LC** — `low` 64 kbps, `mid` 128 kbps,
 `high` 192 kbps — plus un `master.m3u8`. Une **archive FLAC** sans perte est conservée dans RustFS.
 
+### Savoir où passe le temps
+
+Chaque transcodage **terminé** pose une ligne de journal, en `info`, qui donne la durée de
+ses quatre étapes :
+
+```
+docker logs eenv-stream 2>&1 | grep 'terminé en'
+```
+
+```json
+{ "transcode": "019f…", "totalMs": 341207, "msg": "transcode 019f… terminé en 341.2 s",
+  "phases": { "probe": 412,
+              "encode": 118203,
+              "uploadHls":       { "ms": 214180, "items": 3604 },
+              "uploadDownloads": { "ms":   8412, "items":    3 } } }
+```
+
+`items` est le **nombre de fichiers envoyés**, et c'est lui qui rend la ligne actionnable :
+un sermon de deux heures fait 1200 segments par rendu, soit ~3604 envois pour le seul HLS.
+Un `uploadHls` long avec beaucoup d'`items` dit que le coût est **par fichier** — donc que le
+remède est d'envoyer en parallèle, et non de changer de disque ou de codec. Un `encode` long
+avec peu d'`items` dirait l'inverse.
+
+> Cette ligne existe parce que le service ne mesurait rien et qu'on optimisait donc de mémoire.
+> Les trois soupçons habituels — « c'est le CPU », « c'est le disque », « c'est ffmpeg » — ne
+> se départagent pas autrement, et deux d'entre eux ne s'appliquent même pas ici : il n'y a pas
+> de `-re` dans ce dépôt (donc pas de lecture bridée au temps réel), et il n'y a pas de flux
+> RTMP dans la plateforme — le direct vient de YouTube, ce service ne fait que du VOD.
+
 ---
 
 ## Authentification
