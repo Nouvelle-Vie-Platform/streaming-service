@@ -32,15 +32,27 @@ const DELETE_BATCH = 1000
  * timeout is safe).
  */
 export class RustfsStorage {
-  /** Uploads every file under `localDir` to `<keyPrefix>/<relative-path>`. */
-  async uploadDirectory(localDir: string, keyPrefix: string): Promise<void> {
+  /**
+   * Uploads every file under `localDir` to `<keyPrefix>/<relative-path>`, and
+   * returns **how many** were sent.
+   *
+   * The count is not decoration. A two-hour sermon is 1200 segments per rendition,
+   * three renditions — some 3600 round-trips, one per file, strictly sequential.
+   * Reporting the count next to the elapsed time is what tells a reader whether
+   * the cost is *per file* or *per byte*, and therefore which remedy is the right
+   * one. Without it the measurement says « slow » and nothing else.
+   */
+  async uploadDirectory(localDir: string, keyPrefix: string): Promise<number> {
     const entries = await readdir(localDir, { recursive: true, withFileTypes: true })
+    let sent = 0
     for (const entry of entries) {
       if (!entry.isFile()) continue
       const absolute = join(entry.parentPath, entry.name)
       const key = `${keyPrefix}/${relative(localDir, absolute).split(sep).join('/')}`
       await this.put(key, absolute)
+      sent += 1
     }
+    return sent
   }
 
   /** Uploads a single file to an exact key. */

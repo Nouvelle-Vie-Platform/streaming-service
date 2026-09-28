@@ -41,7 +41,10 @@ function stubSideEffects() {
     return { broadcast: () => {} } as unknown as TranscodePublisher
   })
   app.container.swap(RustfsStorage, () => {
-    return { uploadDirectory: async () => {} } as unknown as RustfsStorage
+    // Rend le **nombre de fichiers envoyés**, comme la vraie : c'est ce que la
+    // mesure des phases journalise, et un double qui rendrait `undefined` ferait
+    // passer un contrat que la production n'a pas.
+    return { uploadDirectory: async () => 0 } as unknown as RustfsStorage
   })
   app.container.swap(ArchiveQueue, () => {
     return { enqueue: async () => {} } as unknown as ArchiveQueue
