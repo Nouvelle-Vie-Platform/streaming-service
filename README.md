@@ -185,9 +185,17 @@ Les qualités HLS produites : **3 rendus AAC-LC** — `low` 64 kbps, `mid` 128 k
 Chaque transcodage **terminé** pose une ligne de journal, en `info`, qui donne la durée de
 ses quatre étapes :
 
+```bash
+# Le WORKER, pas le serveur — et la couleur alterne à chaque déploiement.
+for c in blue green; do sudo docker logs "eenv-stream-worker-$c" 2>&1 | grep 'terminé en'; done
 ```
-docker logs eenv-stream 2>&1 | grep 'terminé en'
-```
+
+> ⚠️ **C'est le worker qui transcode**, jamais le serveur : celui-ci accepte le
+> dépôt et met en file, `transcode:work` fait le travail. Chercher la ligne dans
+> `eenv-stream-blue` ne rend rien, et ce rien ressemble à « la mesure ne marche
+> pas ». La couleur, elle, bascule à chaque déploiement — d'où la boucle sur les
+> deux. Et les journaux d'un conteneur **recréé** repartent de zéro : un worker
+> redéployé ce matin ne sait rien du sermon d'hier.
 
 ```json
 { "transcode": "019f…", "totalMs": 341207, "msg": "transcode 019f… terminé en 341.2 s",
