@@ -63,6 +63,23 @@ jobs:
           port: ${{ secrets.VPS_PORT }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          # **Le budget de l'action doit dépasser le pire cas du script.**
+          #
+          # `appleboy/ssh-action` coupe la commande au bout de **10 minutes** par
+          # défaut, et `deploy.sh` peut légitimement durer plus : 120 s de drain
+          # du serveur sortant, puis jusqu'à **600 s** pour l'ancien worker —
+          # `worker.close()` attend la fin du transcodage en cours, et le
+          # `stop_grace_period` du service vaut exactement ces dix minutes.
+          #
+          # Le déploiement était donc **structurellement condamné à rougir** dès
+          # qu'un sermon se transcodait pendant la bascule : le trafic était déjà
+          # sur la nouvelle couleur, le service tournait, et le job échouait
+          # quand même. Mesuré sur `v1.1.2` — arrêt du worker à 20:19:36, coupure
+          # SSH à 20:26:36, alors que tout le reste avait réussi.
+          #
+          # 20 min laisse le pire cas passer avec de la marge, sans transformer
+          # un vrai blocage en attente d'une heure.
+          command_timeout: 20m
       # Le garde-barrière SSH côté VPS (`ssh_commande.sh`, commande forcée dans
       # authorized_keys) n'accepte QUE cette forme : le chemin exact du script suivi
       # d'une référence d'image de CE dépôt. On passe donc l'image complète, pas le
