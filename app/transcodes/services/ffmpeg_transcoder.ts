@@ -45,12 +45,30 @@ export interface EncodeResult {
 /**
  * Thin wrapper over the system `ffprobe`/`ffmpeg` binaries (see the design, Q7/Q8).
  *
- * The encode is a **single** ffmpeg invocation reading the source once and
- * writing, from that one read: the FLAC archive (upload path only), the three
- * HLS renditions with a master playlist, and the three progressive `.aac`
- * download renditions (ADR-0009) — so `-progress`'s `out_time_us` runs
- * 0→duration exactly once and the percentage formula holds. Video is discarded
- * (`-vn`, ADR-0001).
+ * The **serving** encode is a single ffmpeg invocation reading the source once
+ * and writing, from that one read: the three HLS renditions with a master
+ * playlist, and the three progressive `.aac` download renditions (ADR-0009) —
+ * so `-progress`'s `out_time_us` runs 0→duration exactly once and the percentage
+ * formula holds. Video is discarded (`-vn`, ADR-0001).
+ *
+ * ## L'archive FLAC a sa propre passe, et ce n'est pas un oubli
+ *
+ * Elle était produite dans la même invocation, « depuis un seul décodage ». La
+ * mesure des phases a montré ce que cette économie coûtait : l'encodage occupe
+ * **94 % du temps** d'un transcodage, et il est **sérialisé dans un seul fil** —
+ * un sermon d'1 h 47 est sorti à 6,4× le temps réel, là où un seul flux AAC en
+ * fait plusieurs dizaines. Les quatre encodeurs se suivent au lieu de tourner
+ * ensemble.
+ *
+ * Or l'archive n'est **utile à personne avant `COMPLETED`** : le job qui la
+ * pousse s'exécute déjà après. La garder dans la passe principale retardait donc
+ * le moment où l'enseignement devient écoutable, pour un fichier de conservation
+ * que nul n'attend. Elle passe dans {@link encodeArchive}, appelée par
+ * `ArchiveTranscode`.
+ *
+ * Le prix assumé : **la source est décodée deux fois**. Le décodage est la part
+ * bon marché du travail, et la seconde a lieu dans un job de fond où plus
+ * personne ne compte les secondes.
  */
 export class FfmpegTranscoder {
   async probe(sourcePath: string): Promise<ProbeResult> {
@@ -79,10 +97,10 @@ export class FfmpegTranscoder {
    * Encodes the source (a local path or a remote URL — ffmpeg reads both) into
    * local HLS **and** the three progressive `.aac` download renditions (ADR-0009,
    * produced on both ingestion paths — they are a serving artefact, not an
-   * archival one). When `withArchive` is true it also writes the lossless FLAC
-   * master; a URL ingestion sets it false (the original already lives at the URL,
-   * ADR-0004). `onProgress` gets an integer percentage (0-99) as ffmpeg advances;
-   * it is not called when the duration is unknown.
+   * archival one). The lossless FLAC master is **no longer written here**: see
+   * {@link encodeArchive} and the class header. `onProgress` gets an integer
+   * percentage (0-99) as ffmpeg advances; it is not called when the duration is
+   * unknown.
    *
    * Returns the download renditions with their **locally measured byte sizes**,
    * so the caller (#186) can persist and publish them without a `HEAD` per file.
@@ -91,8 +109,7 @@ export class FfmpegTranscoder {
     source: string,
     id: string,
     durationSeconds: number | null,
-    onProgress: (percent: number) => void,
-    options: { withArchive: boolean } = { withArchive: true }
+    onProgress: (percent: number) => void
   ): Promise<EncodeResult> {
     const outDir = hlsOutputDir(id)
     await mkdir(outDir, { recursive: true })
@@ -102,12 +119,8 @@ export class FfmpegTranscoder {
     // The `.aac` download renditions live outside the HLS dir (see hls.ts) so the
     // HLS upload never sweeps them — ensure their staging dir exists.
     await mkdir(downloadOutputDir(id), { recursive: true })
-    if (options.withArchive) {
-      // The FLAC archive lives outside the HLS dir (see hls.ts) — ensure its dir exists.
-      await mkdir(dirname(archivePath(id)), { recursive: true })
-    }
 
-    const args = this.buildArgs(source, id, outDir, options.withArchive)
+    const args = this.buildArgs(source, id, outDir)
 
     await new Promise<void>((resolve, reject) => {
       const proc = spawn('ffmpeg', args)
@@ -159,7 +172,54 @@ export class FfmpegTranscoder {
     )
   }
 
-  private buildArgs(source: string, id: string, outDir: string, withArchive: boolean): string[] {
+  /**
+   * **L'archive FLAC, dans sa propre passe** — appelée par le job d'archivage,
+   * après `COMPLETED` (ADR-0004).
+   *
+   * Un seul flux de sortie, sans progression : personne n'attend ce fichier, et
+   * lui câbler un pourcentage donnerait un second compteur qui ne s'affiche
+   * nulle part. Voir l'en-tête de la classe pour ce que ce découpage coûte (un
+   * second décodage) et ce qu'il rachète (l'écoute cesse d'attendre la
+   * conservation).
+   *
+   * **Jamais pour une source distante** : l'original vit à son URL, il n'y a
+   * rien à archiver — l'appelant le sait et ne l'appelle pas.
+   */
+  async encodeArchive(source: string, id: string): Promise<void> {
+    const target = archivePath(id)
+    await mkdir(dirname(target), { recursive: true })
+
+    const args = [
+      '-hide_banner',
+      '-y',
+      '-i',
+      source,
+      '-vn',
+      '-nostats',
+      '-map',
+      '0:a:0',
+      '-c:a',
+      'flac',
+      target,
+    ]
+
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn('ffmpeg', args)
+
+      let stderrTail = ''
+      proc.stderr.on('data', (chunk) => {
+        stderrTail = (stderrTail + chunk.toString()).slice(-2000)
+      })
+
+      proc.on('error', reject)
+      proc.on('close', (code) => {
+        if (code === 0) resolve()
+        else reject(new Error(`ffmpeg (archive) exited with code ${code}: ${stderrTail}`))
+      })
+    })
+  }
+
+  private buildArgs(source: string, id: string, outDir: string): string[] {
     const bitrateFlags = RENDITIONS.flatMap((rendition, index) => [
       `-b:a:${index}`,
       rendition.bitrate,
@@ -177,10 +237,7 @@ export class FfmpegTranscoder {
       '-progress',
       'pipe:1',
       '-nostats',
-      // Output 1 — lossless FLAC archive (skipped for a URL source: the original
-      // already lives at the URL, ADR-0004).
-      ...(withArchive ? ['-map', '0:a:0', '-c:a', 'flac', archivePath(id)] : []),
-      // Output 2 — the three HLS renditions + master playlist.
+      // Output 1 — the three HLS renditions + master playlist.
       ...RENDITIONS.flatMap(() => ['-map', '0:a:0']),
       '-c:a',
       'aac',
@@ -200,7 +257,7 @@ export class FfmpegTranscoder {
       '-hls_segment_filename',
       join(outDir, '%v', 'seg_%03d.ts'),
       join(outDir, '%v', 'index.m3u8'),
-      // Outputs 3-5 — the three progressive `.aac` download renditions, mapped
+      // Outputs 2-4 — the three progressive `.aac` download renditions, mapped
       // from the same source read (no second decode). Produced on both ingestion
       // paths: they are a serving artefact, not an archive (ADR-0009).
       ...downloadOutputArgs(id),

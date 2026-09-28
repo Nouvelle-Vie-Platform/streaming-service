@@ -70,14 +70,9 @@ test.group('download renditions — real ffmpeg pass (ADR-0009)', (group) => {
   test('one pass writes three .aac at the 64/128/192k ladder', async ({ assert }) => {
     const transcoder = new FfmpegTranscoder()
 
-    const result = await transcoder.encode(
-      sourcePath,
-      id,
-      SOURCE_SECONDS,
-      () => {},
-      // No FLAC needed to prove the download renditions; keeps the pass lean.
-      { withArchive: false }
-    )
+    // La passe de service n'écrit plus le FLAC — il a sa propre passe, dans le
+    // job d'archivage (voir l'en-tête de `FfmpegTranscoder`).
+    const result = await transcoder.encode(sourcePath, id, SOURCE_SECONDS, () => {})
 
     // The encoder reports one measured rendition per ladder rung.
     assert.lengthOf(result.downloads, RENDITIONS.length)

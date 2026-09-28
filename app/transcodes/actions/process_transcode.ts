@@ -89,22 +89,14 @@ export class ProcessTranscode {
 
       let lastPercent = 0
       const result = await timings.time('encode', () =>
-        this.transcoder.encode(
-          params.source,
-          params.id,
-          probe.durationSeconds,
-          (percent) => {
-            if (percent > lastPercent) {
-              lastPercent = percent
-              // Best-effort: a Redis hiccup must not fail the encode.
-              void this.progressStore.set(params.id, percent).catch(() => {})
-              this.publisher.broadcast(transcode, percent)
-            }
-          },
-          // A URL source keeps no FLAC archive — the original lives at the URL.
-          // The `.aac` download renditions are produced on both paths (ADR-0009).
-          { withArchive: !params.remote }
-        )
+        this.transcoder.encode(params.source, params.id, probe.durationSeconds, (percent) => {
+          if (percent > lastPercent) {
+            lastPercent = percent
+            // Best-effort: a Redis hiccup must not fail the encode.
+            void this.progressStore.set(params.id, percent).catch(() => {})
+            this.publisher.broadcast(transcode, percent)
+          }
+        })
       )
       downloads = result.downloads
     } else {
@@ -174,7 +166,15 @@ export class ProcessTranscode {
     // avant le retour. Plus haut, elle raterait la fin ; dans un `finally`, elle
     // sortirait aussi sur un échec — et une ligne « terminé » sur un transcodage
     // qui a échoué est exactement le genre de journal qui trompe à 3 h du matin.
-    timings.log(params.id)
+    timings.log(params.id, {
+      // **Ce qui rend la ligne lisible sans arithmétique.** Sans la durée de
+      // l'audio, « encode : 1006 s » ne dit pas si c'est rapide ou lent ; avec
+      // elle, le rapport au temps réel saute aux yeux. Et sans le régime, on ne
+      // sait pas si ffmpeg a aussi **téléchargé** la source pendant l'encodage —
+      // ce qui expliquerait tout autre chose.
+      audioSeconds: transcode.durationSeconds,
+      regime: params.remote ? 'url' : 'depot',
+    })
 
     // The download renditions are now on the public origin: hand the caller (#186)
     // each rendition's absolute URL + byte size so it can persist and publish them.

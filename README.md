@@ -47,7 +47,7 @@ archive) vivent ici, servis depuis **RustFS**, jamais dans le serveur applicatif
                                               reprend HLS + archive + ligne + Redis
 ```
 
-- **Postgres** : état durable d'un *Transcode* (source de vérité du cycle de vie).
+- **Postgres** : état durable d'un _Transcode_ (source de vérité du cycle de vie).
 - **Redis** : back-end de la file BullMQ **et** progression volatile (le `%`).
 - **RustFS** (S3) : **origine de diffusion** du HLS **et** dépôt de l'archive FLAC. Le
   disque applicatif reste borné (source et HLS supprimés après archivage). Rien n'est
@@ -65,16 +65,24 @@ Toutes les routes exigent un jeton `Authorization: Bearer <token>` (voir
 
 `multipart/form-data` :
 
-| Champ | Requis | Description |
-|---|---|---|
-| `file` | ✅ | Source, ≤ 2 Go. Audio (`mp3 m4a aac flac ogg wav`) ou vidéo (`mp4 mkv mov webm avi wmv`). |
-| `callbackUrl` | — | URL notifiée à la finalisation (webhook). |
-| `callbackSecret` | — | Secret HMAC pour signer le webhook. |
+| Champ            | Requis | Description                                                                               |
+| ---------------- | ------ | ----------------------------------------------------------------------------------------- |
+| `file`           | ✅     | Source, ≤ 2 Go. Audio (`mp3 m4a aac flac ogg wav`) ou vidéo (`mp4 mkv mov webm avi wmv`). |
+| `callbackUrl`    | —      | URL notifiée à la finalisation (webhook).                                                 |
+| `callbackSecret` | —      | Secret HMAC pour signer le webhook.                                                       |
 
 Réponse `202` :
 
 ```json
-{ "data": { "id": "0191…", "status": "PENDING", "progress": 0, "outputPlaylist": null, "error": null } }
+{
+  "data": {
+    "id": "0191…",
+    "status": "PENDING",
+    "progress": 0,
+    "outputPlaylist": null,
+    "error": null
+  }
+}
 ```
 
 `422` si le fichier est invalide (extension/taille). La validation média réelle (présence
@@ -93,12 +101,12 @@ Redis et la ligne en base. **La Source de l'appelant n'est jamais touchée** : i
 URL, le master reste son objet (ADR-0007) et il n'y a **pas d'archive** — cette absence
 n'est pas une erreur.
 
-| Code | Quand |
-|---|---|
-| `204` | Supprimé. Le HLS n'est plus servable. |
+| Code  | Quand                                                                          |
+| ----- | ------------------------------------------------------------------------------ |
+| `204` | Supprimé. Le HLS n'est plus servable.                                          |
 | `404` | `id` inconnu — **y compris un `id` déjà supprimé** (`E_TRANSCODE_NOT_EXISTS`). |
-| `409` | Un worker détient le Transcode **en ce moment** (`E_TRANSCODE_IN_PROGRESS`). |
-| `422` | L'`id` n'est pas un UUID v7. |
+| `409` | Un worker détient le Transcode **en ce moment** (`E_TRANSCODE_IN_PROGRESS`).   |
+| `422` | L'`id` n'est pas un UUID v7.                                                   |
 
 Un Transcode en file (`PENDING`) est **retiré de la file puis supprimé** ; seul un job
 **actif** répond `409`, et ce refus est borné dans le temps — ADR-0008 explique pourquoi
@@ -145,8 +153,8 @@ persiste et sert sans faire de `HEAD`. `downloads` est peuplé à `COMPLETED`, v
   "error": null,
   "durationSeconds": 321.5,
   "downloads": [
-    { "name": "low",  "url": "https://media.example.com/dl/0191…/low.aac",  "bytes": 2600000 },
-    { "name": "mid",  "url": "https://media.example.com/dl/0191…/mid.aac",  "bytes": 5100000 },
+    { "name": "low", "url": "https://media.example.com/dl/0191…/low.aac", "bytes": 2600000 },
+    { "name": "mid", "url": "https://media.example.com/dl/0191…/mid.aac", "bytes": 5100000 },
     { "name": "high", "url": "https://media.example.com/dl/0191…/high.aac", "bytes": 7700000 }
   ]
 }
@@ -180,6 +188,11 @@ PENDING ──▶ PROCESSING ──▶ COMPLETED     (master.m3u8 + segments ser
 Les qualités HLS produites : **3 rendus AAC-LC** — `low` 64 kbps, `mid` 128 kbps,
 `high` 192 kbps — plus un `master.m3u8`. Une **archive FLAC** sans perte est conservée dans RustFS.
 
+⚠️ **L'archive est encodée dans une passe à part**, par le job d'archivage, après `COMPLETED`.
+Elle partageait le décodage de la passe de service ; la mesure a montré que cette économie
+retardait le moment où l'enseignement devient écoutable, pour un fichier que personne n'attend.
+Le prix assumé : la source est décodée deux fois, la seconde dans un job de fond.
+
 ### Savoir où passe le temps
 
 Chaque transcodage **terminé** pose une ligne de journal, en `info`, qui donne la durée de
@@ -197,25 +210,45 @@ for c in blue green; do sudo docker logs "eenv-stream-worker-$c" 2>&1 | grep 'te
 > deux. Et les journaux d'un conteneur **recréé** repartent de zéro : un worker
 > redéployé ce matin ne sait rien du sermon d'hier.
 
+Deux lignes par sermon : la passe de **service**, puis celle de l'**archive**.
+
 ```json
-{ "transcode": "019f…", "totalMs": 341207, "msg": "transcode 019f… terminé en 341.2 s",
-  "phases": { "probe": 412,
-              "encode": 118203,
-              "uploadHls":       { "ms": 214180, "items": 3604 },
-              "uploadDownloads": { "ms":   8412, "items":    3 } } }
+{
+  "transcode": "01a0…",
+  "regime": "depot",
+  "audioSeconds": 6438,
+  "realtimeFactor": 6.4,
+  "totalMs": 1065946,
+  "msg": "transcode 01a0… terminé en 1065.9 s",
+  "phases": {
+    "probe": 567,
+    "encode": 1006396,
+    "uploadHls": { "ms": 55459, "items": 3223 },
+    "uploadDownloads": { "ms": 3440, "items": 3 }
+  }
+}
 ```
 
-`items` est le **nombre de fichiers envoyés**, et c'est lui qui rend la ligne actionnable :
-un sermon de deux heures fait 1200 segments par rendu, soit ~3604 envois pour le seul HLS.
-Un `uploadHls` long avec beaucoup d'`items` dit que le coût est **par fichier** — donc que le
-remède est d'envoyer en parallèle, et non de changer de disque ou de codec. Un `encode` long
-avec peu d'`items` dirait l'inverse.
+Trois champs font le travail :
 
-> Cette ligne existe parce que le service ne mesurait rien et qu'on optimisait donc de mémoire.
-> Les trois soupçons habituels — « c'est le CPU », « c'est le disque », « c'est ffmpeg » — ne
-> se départagent pas autrement, et deux d'entre eux ne s'appliquent même pas ici : il n'y a pas
-> de `-re` dans ce dépôt (donc pas de lecture bridée au temps réel), et il n'y a pas de flux
-> RTMP dans la plateforme — le direct vient de YouTube, ce service ne fait que du VOD.
+- **`realtimeFactor`** — combien de fois le temps réel. C'est le seul chiffre qui dise si
+  l'encodage est rapide ou lent : « 1006 s » ne veut rien dire sans la durée de l'audio.
+  Un seul flux AAC fait plusieurs dizaines de fois le temps réel ; **6,4× est la signature
+  d'encodages sérialisés dans un même fil**.
+- **`regime`** — `depot` (fichier local) ou `url` (ffmpeg lit la source à distance, et la
+  **télécharge donc pendant l'encodage**). Deux causes possibles à un `encode` long, deux
+  remèdes opposés.
+- **`items`** — le nombre de fichiers envoyés. Un `uploadHls` long avec beaucoup d'`items` dit
+  que le coût est **par fichier** ; peu d'`items` dirait l'inverse.
+
+> **Mesuré le 28/09/2026**, sur un sermon d'1 h 47 : `encode` 94,4 %, `uploadHls` 5,2 % pour
+> 3223 fichiers (17 ms l'envoi). Paralléliser l'envoi — le réflexe — aurait gagné moins d'une
+> minute sur dix-huit. C'est cette ligne qui a évité d'optimiser les 5 %.
+
+> Cette mesure existe parce que le service ne mesurait rien et qu'on optimisait de mémoire.
+> Deux des trois soupçons habituels ne s'appliquent même pas ici : il n'y a pas de `-re` dans
+> ce dépôt (donc pas de lecture bridée au temps réel), et il n'y a pas de flux RTMP dans la
+> plateforme — le direct vient de YouTube, ce service ne fait que du VOD.
 
 ---
 
@@ -306,20 +339,20 @@ Le préfixe `hls/` du bucket est rendu **lisible anonymement** par le one-shot `
 
 ## Variables d'environnement
 
-| Variable | Requis | Défaut | Rôle |
-|---|---|---|---|
-| `APP_KEY` | ✅ | — | Clé applicative AdonisJS. |
-| `HOST` / `PORT` | — | `0.0.0.0` / `3333` | Bind du serveur. |
-| `APP_URL`, `LOG_LEVEL`, `TZ` | — | | Divers. |
-| `DB_HOST` `DB_PORT` `DB_USER` `DB_DATABASE` | ✅ | | Postgres. `DB_PASSWORD` optionnel. |
-| `REDIS_HOST` `REDIS_PORT` | ✅ | | Redis. `REDIS_PASSWORD` optionnel. |
-| `WORKER_CONCURRENCY` | — | `1` | Transcodages en parallèle par worker. |
-| `RUSTFS_ENDPOINT` | ✅ | | Endpoint S3 de RustFS. |
-| `RUSTFS_ACCESS_KEY` `RUSTFS_SECRET_KEY` `RUSTFS_BUCKET` | ✅ | | Accès + bucket. `RUSTFS_REGION` optionnel (`us-east-1`). |
-| `HLS_PUBLIC_BASE_URL` | ✅ | | Base publique du HLS (Caddy/CDN) ; `outputPlaylist` = `<base>/hls/<id>/master.m3u8`. |
-| `AUTH_VERIFY_URL` | ✅ | | Endpoint de vérification du jeton. |
-| `AUTH_VERIFY_METHOD` `AUTH_VERIFY_STATUS` `AUTH_VERIFY_BODY_MATCH` | — | `GET` / `200` / — | Critères de validation. |
-| `AUTH_CACHE_TTL` | — | `60` | TTL (s) du cache de vérification. |
+| Variable                                                           | Requis | Défaut             | Rôle                                                                                 |
+| ------------------------------------------------------------------ | ------ | ------------------ | ------------------------------------------------------------------------------------ |
+| `APP_KEY`                                                          | ✅     | —                  | Clé applicative AdonisJS.                                                            |
+| `HOST` / `PORT`                                                    | —      | `0.0.0.0` / `3333` | Bind du serveur.                                                                     |
+| `APP_URL`, `LOG_LEVEL`, `TZ`                                       | —      |                    | Divers.                                                                              |
+| `DB_HOST` `DB_PORT` `DB_USER` `DB_DATABASE`                        | ✅     |                    | Postgres. `DB_PASSWORD` optionnel.                                                   |
+| `REDIS_HOST` `REDIS_PORT`                                          | ✅     |                    | Redis. `REDIS_PASSWORD` optionnel.                                                   |
+| `WORKER_CONCURRENCY`                                               | —      | `1`                | Transcodages en parallèle par worker.                                                |
+| `RUSTFS_ENDPOINT`                                                  | ✅     |                    | Endpoint S3 de RustFS.                                                               |
+| `RUSTFS_ACCESS_KEY` `RUSTFS_SECRET_KEY` `RUSTFS_BUCKET`            | ✅     |                    | Accès + bucket. `RUSTFS_REGION` optionnel (`us-east-1`).                             |
+| `HLS_PUBLIC_BASE_URL`                                              | ✅     |                    | Base publique du HLS (Caddy/CDN) ; `outputPlaylist` = `<base>/hls/<id>/master.m3u8`. |
+| `AUTH_VERIFY_URL`                                                  | ✅     |                    | Endpoint de vérification du jeton.                                                   |
+| `AUTH_VERIFY_METHOD` `AUTH_VERIFY_STATUS` `AUTH_VERIFY_BODY_MATCH` | —      | `GET` / `200` / —  | Critères de validation.                                                              |
+| `AUTH_CACHE_TTL`                                                   | —      | `60`               | TTL (s) du cache de vérification.                                                    |
 
 ---
 
@@ -340,7 +373,7 @@ Le préfixe `hls/` du bucket est rendu **lisible anonymement** par le one-shot `
 
 ### Structure
 
-Module `app/transcodes/` (couches `controllers` → `actions` → `transformers`, les *actions*
+Module `app/transcodes/` (couches `controllers` → `actions` → `transformers`, les _actions_
 étant la seule couche qui touche les modèles), plus `services`, `queues`, `support`,
 `exceptions`. Le worker (`commands/transcode_worker.ts`) draine trois files : transcodage,
 webhook et archivage.
