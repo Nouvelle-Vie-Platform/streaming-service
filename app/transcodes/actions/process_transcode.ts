@@ -3,6 +3,7 @@ import { FfmpegTranscoder } from '#transcodes/services/ffmpeg_transcoder'
 import { ProgressStore } from '#transcodes/services/progress_store'
 import { TranscodePublisher } from '#transcodes/services/transcode_publisher'
 import { RustfsStorage } from '#transcodes/services/rustfs_storage'
+import { SourceStaging } from '#transcodes/services/source_staging'
 import { WebhookQueue } from '#transcodes/queues/webhook_queue'
 import { ArchiveQueue } from '#transcodes/queues/archive_queue'
 import { NoAudioTrackException } from '#transcodes/exceptions/no_audio_track_exception'
@@ -63,7 +64,8 @@ export class ProcessTranscode {
     private publisher: TranscodePublisher,
     private webhookQueue: WebhookQueue,
     private rustfs: RustfsStorage,
-    private archiveQueue: ArchiveQueue
+    private archiveQueue: ArchiveQueue,
+    private staging: SourceStaging
   ) {}
 
   async execute(params: ProcessTranscodeParams): Promise<ProcessTranscodeResult> {
@@ -81,6 +83,31 @@ export class ProcessTranscode {
         throw new NoAudioTrackException()
       }
 
+      /*
+       * **La source distante est rapatriée avant d'être encodée**, et les deux
+       * étapes sont chronométrées à part.
+       *
+       * ffmpeg lit très bien une URL — il la lit *pendant* l'encodage, et les
+       * deux durées se confondaient alors dans un seul chiffre. Mesuré en
+       * production : 5,7× le temps réel, là où la même échelle encodée depuis un
+       * fichier local en fait 55 sur une machine comparable. Un dépôt pesant
+       * jusqu'à 2 Go, son seul transfert peut valoir mille secondes.
+       *
+       * ⚠️ **Le régime d'ingestion ne bouge pas** : `params.remote` reste vrai,
+       * et il n'y a donc toujours pas d'archive FLAC. Le master vit dans RustFS
+       * (ADR-0007, et l'ADR-0033 du portail) ; laisser une copie de travail
+       * passer pour un téléversement produirait une archive que personne n'a
+       * demandée, et pour laquelle il n'y a pas de place.
+       */
+      let input = params.source
+      if (params.remote) {
+        await timings.bytes('download', async () => {
+          const staged = await this.staging.fetch(params.source, params.id)
+          input = staged.path
+          return staged.bytes
+        })
+      }
+
       transcode.status = 'PROCESSING'
       transcode.durationSeconds = probe.durationSeconds
       await transcode.save()
@@ -88,17 +115,24 @@ export class ProcessTranscode {
       this.publisher.broadcast(transcode, 0)
 
       let lastPercent = 0
-      const result = await timings.time('encode', () =>
-        this.transcoder.encode(params.source, params.id, probe.durationSeconds, (percent) => {
-          if (percent > lastPercent) {
-            lastPercent = percent
-            // Best-effort: a Redis hiccup must not fail the encode.
-            void this.progressStore.set(params.id, percent).catch(() => {})
-            this.publisher.broadcast(transcode, percent)
-          }
-        })
-      )
-      downloads = result.downloads
+      try {
+        const result = await timings.time('encode', () =>
+          this.transcoder.encode(input, params.id, probe.durationSeconds, (percent) => {
+            if (percent > lastPercent) {
+              lastPercent = percent
+              // Best-effort: a Redis hiccup must not fail the encode.
+              void this.progressStore.set(params.id, percent).catch(() => {})
+              this.publisher.broadcast(transcode, percent)
+            }
+          })
+        )
+        downloads = result.downloads
+      } finally {
+        // **Réussi ou non.** Une copie de travail abandonnée sur le disque ne se
+        // rattrape par aucun nettoyage : rien ne la référence, et le job
+        // d'archivage d'une ingestion par URL ne la connaît pas.
+        if (params.remote) await this.staging.discard(params.id)
+      }
     } else {
       // Checkpoint retry: the pass already staged the `.aac` alongside the HLS —
       // recover their sizes without re-encoding (ADR-0009).
