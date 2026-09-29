@@ -32,27 +32,44 @@ Ce n'est pas un choix de vitesse, c'est un choix de **qualité**, et il ne se r�
 « plus juste » :
 
 - **En une passe**, `loudnorm` ne connaît pas encore le morceau, donc il normalise
-  *dynamiquement* : son gain varie au fil de la lecture. Le niveau moyen sort juste, mais
+  _dynamiquement_ : son gain varie au fil de la lecture. Le niveau moyen sort juste, mais
   une intro calme est poussée et un refrain fort retenu — le filtre **retouche l'intérieur
   des titres**.
 - **En deux passes**, la mesure autorise `linear=true` : **un gain constant**, décidé une
   fois, appliqué partout. Les dynamiques du morceau sont intactes et seul son niveau bouge.
 
-Or ce qu'on cherche, c'est l'égalité *entre* les titres, pas une compression *dans* les
+Or ce qu'on cherche, c'est l'égalité _entre_ les titres, pas une compression _dans_ les
 titres. Le mode dynamique ferait donc les deux, dont un qu'on ne demande pas.
 
 Le dépôt a déjà accepté une double décodification — l'archive FLAC — **avec une mesure à
-l'appui**. Ici, la même exigence n'est pas satisfaite : **le chiffre n'existe pas encore.**
-Cette tranche a été écrite sans exécuter ffmpeg. Trois choses bornent le risque :
+l'appui**. La même exigence est satisfaite ici. Mesuré sur ffmpeg 9.0.1, bruit rose de
+3 min, Apple Silicon :
 
-1. la seconde lecture est un **décodage**, pas un encodage ; la mesure des phases de ce
-   dépôt a montré que l'encodage pèse 94 % d'un transcodage ;
+| passe                 | durée     | vitesse                 |
+| --------------------- | --------- | ----------------------- |
+| analyse (`-f null -`) | 3,1 s     | —                       |
+| application           | 4,1 s     | —                       |
+| **deux passes**       | **7,2 s** | **25,1× le temps réel** |
+| une passe             | 4,1 s     | 44,3× le temps réel     |
+
+Le second décodage coûte **+76 % de temps de mur**, l'analyse pesant 43 % du total. Le
+choix se tient malgré ce surcoût, pour trois raisons :
+
+1. l'ordre de grandeur : un titre de trois minutes est prêt en **7 secondes**. Le régime
+   des enseignements tourne à 6,4× le temps réel — la radio reste **quatre fois plus
+   rapide que lui alors qu'elle décode deux fois**. Le surcoût se paie sur un budget qui
+   n'est pas contraint ;
 2. depuis que la source distante est **rapatriée avant d'être encodée**, la seconde
    lecture se fait sur le disque local et non sur le réseau ;
 3. la passe d'analyse est chronométrée **sous son propre nom** (`analyseLoudness`), à côté
-   de `encode`, dans la ligne de journal existante. Le premier titre encodé en production
-   donnera donc le rapport de lui-même, et ce choix pourra être défendu ou défait sur un
-   nombre plutôt que sur un raisonnement.
+   de `encode`, dans la ligne de journal existante : les premiers titres réels
+   confirmeront ou défairont ce tableau d'eux-mêmes.
+
+⚠️ **Ce qui est mesuré, c'est le coût, pas le gain.** Sur du bruit rose les deux modes
+annoncent `normalization_type: dynamic` : une source à LRA nulle est un cas dégénéré où
+`linear` n'a rien à faire. La supériorité du gain constant reste donc l'argument de
+**qualité** exposé ci-dessus, et non un chiffre — elle ne s'observera que sur de la vraie
+musique.
 
 Un filet, enfin : si l'analyse ne rend rien d'exploitable — une source silencieuse fait
 imprimer `-inf` —, la passe d'application retombe sur le mode dynamique au lieu d'échouer.
@@ -85,11 +102,11 @@ profil est un autre Transcode, avec son identifiant et ses octets.
 
 Ce fichier **n'est écouté par personne** : liquidsoap le lit depuis le RustFS de la même
 machine, le mélange aux autres et **ré-encode** le flux qu'il diffuse. C'est donc un
-*master de diffusion*, et la connectivité contrainte de la zone couverte s'applique au
+_master de diffusion_, et la connectivité contrainte de la zone couverte s'applique au
 flux sortant de liquidsoap, pas à ce fichier-ci.
 
 Le calibrer sur le débit de l'antenne ferait payer **deux fois** la perte lossy : une fois
-ici, une fois à la diffusion. Et 64 kbps est le *plancher* de l'échelle HLS (ADR-0001),
+ici, une fois à la diffusion. Et 64 kbps est le _plancher_ de l'échelle HLS (ADR-0001),
 choisi pour de la louange **diffusée telle quelle** ; commencer une chaîne de deux
 encodages au plancher, c'est s'assurer que le second passe dessous.
 
@@ -150,7 +167,7 @@ l'ADR-0006 a posée pour `outputPlaylist` et il n'y a aucune raison de lui faire
 > autre profil est né.
 
 `radioTrack` n'est publié qu'à **`COMPLETED`**. La ligne le porte plus tôt — dès la fin de
-l'encodage, avant l'envoi vers RustFS (voir plus bas *pourquoi* si tôt) — mais publier l'URL
+l'encodage, avant l'envoi vers RustFS (voir plus bas _pourquoi_ si tôt) — mais publier l'URL
 avant annoncerait des octets qui ne sont pas encore servables, alors que `COMPLETED` veut
 précisément dire « lisible depuis RustFS » (ADR-0004).
 
@@ -180,7 +197,7 @@ fichier **à moitié téléchargé**, donc pas d'index central. Cette raison ne 
 ici : liquidsoap n'ouvre le fichier qu'après `COMPLETED`.
 
 En revanche l'antenne a besoin de la **durée à la seconde** pour calculer ses fondus et ses
-coupures, et un ADTS n'en porte aucune : elle y est *estimée* depuis la taille, avec ≈1 % de
+coupures, et un ADTS n'en porte aucune : elle y est _estimée_ depuis la taille, avec ≈1 % de
 dérive (ADR-0009). Le `moov` d'un MP4 la porte exactement, et elle s'accorde alors au
 chiffre publié dans le webhook. Deux sources qui se contredisent de 1 % coûteraient plus
 cher que l'index.

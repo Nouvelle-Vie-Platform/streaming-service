@@ -244,13 +244,30 @@ export class FfmpegTranscoder {
    * avec l'archive est que celui-ci est sur le chemin critique : il retarde le
    * moment où le titre est diffusable.
    *
-   * ⚠️ **Le chiffre manque.** Aucune mesure n'a été prise pour ce choix — la
-   * tranche a été écrite sans exécuter ffmpeg. C'est pourquoi la phase est
-   * chronométrée sous son propre nom (`analyseLoudness`) dans
-   * `ProcessTranscode` : le premier titre encodé en production donnera le rapport
-   * analyse/encodage dans la ligne de journal, et ce choix pourra être défendu ou
-   * défait sur un nombre. En attendant, il est justifié par la **qualité**
-   * (gain constant contre gain variable), pas par la vitesse.
+   * **Le chiffre, mesuré** (ffmpeg 9.0.1, bruit rose de 3 min, Apple Silicon) :
+   *
+   * | | durée | vitesse |
+   * |---|---|---|
+   * | analyse (`-f null`) | 3,1 s | — |
+   * | application | 4,1 s | — |
+   * | **deux passes** | **7,2 s** | **25,1× le temps réel** |
+   * | une passe | 4,1 s | 44,3× le temps réel |
+   *
+   * Le second décodage coûte donc **+76 %** de temps de mur, et l'analyse pèse
+   * 43 % du total. Ce qui rend le choix tenable, c'est l'ordre de grandeur : un
+   * titre de trois minutes est prêt en **7 secondes**, là où le régime des
+   * enseignements tourne à 6,4× le temps réel — la radio reste quatre fois plus
+   * rapide que lui *malgré* sa passe de plus. Le surcoût est réel mais il se paie
+   * sur un budget qui n'est pas contraint.
+   *
+   * ⚠️ **Ce qui est mesuré, c'est le coût, pas le gain.** Sur du bruit rose les
+   * deux modes annoncent `normalization_type: dynamic` — une source à LRA nulle
+   * est un cas dégénéré où `linear` n'a rien à faire. La supériorité du gain
+   * constant reste donc un argument de **qualité**, pas un chiffre : elle ne
+   * s'observera que sur de la vraie musique. La phase est chronométrée sous son
+   * propre nom (`analyseLoudness`) dans `ProcessTranscode`, pour que le rapport
+   * analyse/encodage des premiers titres réels confirme ou défasse le tableau
+   * ci-dessus.
    *
    * Rend `null` quand la mesure n'est pas exploitable (une source silencieuse
    * rend `-inf`) : la passe d'application retombe alors sur le mode dynamique

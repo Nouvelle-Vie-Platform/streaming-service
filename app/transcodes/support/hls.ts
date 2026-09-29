@@ -232,10 +232,19 @@ export const RADIO_FORMAT = {
   /**
    * ⚠️ **La fréquence d'échantillonnage est forcée, et ce n'est pas cosmétique.**
    *
-   * Le filtre `loudnorm` travaille en interne à 192 kHz et **c'est aussi la
-   * fréquence de sa sortie** : sans `-ar`, l'encodeur AAC reçoit du 192 kHz et
-   * écrit un fichier deux à quatre fois plus lourd que demandé, que certains
-   * lecteurs refusent. La panne ne ressemble pas à une panne — le fichier joue.
+   * Le filtre `loudnorm` travaille en interne à **192 kHz** et c'est aussi la
+   * fréquence de sa sortie : sans `-ar`, l'encodeur AAC reçoit du 192 kHz et
+   * écrit ce qu'il peut en porter — **96 kHz**, son plafond, mesuré sur
+   * ffmpeg 9.0.1 depuis une source en 48 kHz. Donc une sortie à une fréquence
+   * que personne n'a demandée, deux fois celle de la source, pour un contenu
+   * qui ne porte rien au-dessus.
+   *
+   * **Ce n'est pas le poids qui pose problème** : `-b:a` est honoré et le
+   * fichier ne grossit que de ~2 % (50 464 contre 49 345 octets sur trois
+   * secondes de bruit rose). C'est la fréquence elle-même — liquidsoap et les
+   * lecteurs mobiles n'attendent pas du 96 kHz, et le ré-échantillonnage est
+   * payé à chaque lecture. Et la panne ne ressemble pas à une panne : le
+   * fichier joue.
    */
   sampleRate: 48_000,
 } as const
