@@ -202,6 +202,7 @@ export class ProcessTranscode {
           radioTrack = {
             url: radioTrackUrl(params.id),
             bytes: encoded.bytes,
+            durationSeconds: probe.durationSeconds,
             loudness: encoded.loudness,
             // Les étiquettes viennent de la **source**, pas de ce qu'on a
             // produit : c'est ce que l'administrateur reconnaîtra du fichier
@@ -249,6 +250,10 @@ export class ProcessTranscode {
       radioTrack = {
         url: radioTrackUrl(params.id),
         bytes,
+        // La durée se relit sur la **ligne** : la sonde ne tourne pas sur une
+        // reprise, et `duration_seconds` y a été persisté au passage en
+        // `PROCESSING` précisément parce qu'il ne se retrouve pas autrement.
+        durationSeconds: transcode.durationSeconds ?? radioTrack?.durationSeconds ?? null,
         loudness: radioTrack?.loudness ?? null,
         tags: radioTrack?.tags ?? NO_TAGS,
       }

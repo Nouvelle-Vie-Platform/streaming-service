@@ -156,6 +156,10 @@ test.group('ProcessTranscode — profil radio (issue #46)', (group) => {
     assert.deepEqual(row.radioTrack, {
       url: radioTrackUrl(id),
       bytes: BYTES,
+      // La durée voyage AUSSI ici, et pas seulement au premier niveau du
+      // webhook : le sondage de statut est le chemin de rattrapage d'un webhook
+      // perdu, et l'antenne ne programme pas un morceau sans sa durée.
+      durationSeconds: DURATION,
       loudness: LOUDNESS,
       tags: TAGS,
     })
@@ -204,6 +208,10 @@ test.group('ProcessTranscode — profil radio (issue #46)', (group) => {
     assert.deepEqual(payload.radioTrack, {
       url: radioTrackUrl(id),
       bytes: BYTES,
+      // La durée voyage AUSSI ici, et pas seulement au premier niveau du
+      // webhook : le sondage de statut est le chemin de rattrapage d'un webhook
+      // perdu, et l'antenne ne programme pas un morceau sans sa durée.
+      durationSeconds: DURATION,
       loudness: LOUDNESS,
       tags: TAGS,
     })

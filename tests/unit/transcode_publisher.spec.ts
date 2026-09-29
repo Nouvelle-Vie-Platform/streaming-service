@@ -10,6 +10,7 @@ const ID = '0191ffff-0000-7000-8000-000000000200'
 const RADIO_TRACK: RadioTrackInfo = {
   url: `https://media.example.com/radio/${ID}/track.m4a`,
   bytes: 2_996_000,
+  durationSeconds: 187,
   loudness: {
     targetI: -16,
     inputI: -27.5,
