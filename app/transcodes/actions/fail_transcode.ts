@@ -2,7 +2,7 @@ import Transcode from '#transcodes/models/transcode'
 import { ProgressStore } from '#transcodes/services/progress_store'
 import { TranscodePublisher } from '#transcodes/services/transcode_publisher'
 import { WebhookQueue } from '#transcodes/queues/webhook_queue'
-import { hlsOutputDir } from '#transcodes/support/hls'
+import { downloadOutputDir, hlsOutputDir, radioOutputDir } from '#transcodes/support/hls'
 import { inject } from '@adonisjs/core'
 import { rm } from 'node:fs/promises'
 
@@ -67,5 +67,12 @@ export class FailTranscode {
     // the source was a URL (nothing local to delete).
     if (!params.remote && params.source) await rm(params.source, { force: true })
     await rm(hlsOutputDir(params.id), { recursive: true, force: true })
+    // Les deux autres staging partent aussi, sans condition de profil : un
+    // encodage interrompu laisse un `.aac` tronqué ou une piste radio à moitié
+    // écrite, et **la piste radio à moitié écrite est la plus dangereuse** — sa
+    // présence est le point de reprise, donc une reprise la publierait telle
+    // quelle au lieu de la refaire.
+    await rm(downloadOutputDir(params.id), { recursive: true, force: true })
+    await rm(radioOutputDir(params.id), { recursive: true, force: true })
   }
 }

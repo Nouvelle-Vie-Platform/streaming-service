@@ -5,7 +5,7 @@ import {
   ListObjectsV2Command,
   PutObjectCommand,
 } from '@aws-sdk/client-s3'
-import { DOWNLOAD_FORMAT } from '#transcodes/support/hls'
+import { DOWNLOAD_FORMAT, RADIO_FORMAT } from '#transcodes/support/hls'
 import { readdir, readFile } from 'node:fs/promises'
 import { extname, join, relative, sep } from 'node:path'
 
@@ -16,6 +16,9 @@ const CONTENT_TYPES: Record<string, string> = {
   // Progressive download renditions (ADR-0009); derived from the format so a
   // codec/container change stays a one-line edit in hls.ts.
   [`.${DOWNLOAD_FORMAT.extension}`]: DOWNLOAD_FORMAT.contentType,
+  // Piste radio (issue #46) ; dérivé du format pour la même raison : un
+  // changement de conteneur reste une ligne dans hls.ts.
+  [`.${RADIO_FORMAT.extension}`]: RADIO_FORMAT.contentType,
 }
 
 /** S3 caps a single DeleteObjects call at 1000 keys. */

@@ -1,12 +1,20 @@
 import {
   RENDITIONS,
   HLS_SEGMENT_SECONDS,
+  RADIO_LOUDNESS,
   hlsOutputDir,
   archivePath,
   downloadOutputDir,
   downloadOutputArgs,
   downloadRenditionPath,
+  radioAnalysisArgs,
+  radioOutputArgs,
+  radioOutputDir,
+  radioTrackPath,
 } from '#transcodes/support/hls'
+import type { LoudnessMeasurement, RadioLoudness } from '#transcodes/support/hls'
+import { NO_TAGS, readTags } from '#transcodes/support/media_tags'
+import type { MediaTags } from '#transcodes/support/media_tags'
 import { execFile, spawn } from 'node:child_process'
 import { mkdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -19,6 +27,21 @@ export interface ProbeResult {
   durationSeconds: number | null
   /** Whether the container carries at least one decodable audio track. */
   hasAudio: boolean
+  /**
+   * Le débit du conteneur en bits par seconde, ou `null` quand la sonde n'en
+   * annonce pas (un flux sans en-tête de débit rend `N/A`).
+   *
+   * Lu sur le **conteneur** et non sur la piste : c'est le chiffre que
+   * l'administrateur reconnaîtra du fichier qu'il a déposé, et le seul que tous
+   * les formats annoncent.
+   */
+  bitrate: number | null
+  /**
+   * Les étiquettes de la source — titre, artiste, album — quand elle en porte
+   * (issue #46). Toujours un objet, jamais `undefined` : c'est chaque champ qui
+   * est nullable, parce qu'un fichier peut porter un titre sans album.
+   */
+  tags: MediaTags
 }
 
 /**
@@ -40,6 +63,48 @@ export interface DownloadRendition {
 /** What one encode pass produced besides the HLS (returned for issue #186). */
 export interface EncodeResult {
   downloads: DownloadRendition[]
+}
+
+/**
+ * Ce que la passe radio a produit (issue #46) : la taille du fichier unique,
+ * mesurée localement comme celle des rendus progressifs, et le **niveau
+ * mesuré** — que `loudnorm` calcule sur le résultat pendant qu'il l'écrit, donc
+ * sans un décodage de plus.
+ */
+export interface RadioEncodeResult {
+  bytes: number
+  loudness: RadioLoudness | null
+}
+
+/**
+ * Le bloc JSON que `loudnorm=print_format=json` imprime sur stderr, ou `null`.
+ *
+ * Il n'a aucune imbrication, d'où la recherche par accolades plates ; on retient
+ * le **dernier** bloc, parce qu'un graphe de filtres peut en imprimer plusieurs
+ * et que le nôtre est le dernier à se vider.
+ */
+function parseLoudnormReport(stderr: string): Record<string, string> | null {
+  const blocks = stderr.match(/\{[^{}]*"input_i"[^{}]*\}/g)
+  if (!blocks || blocks.length === 0) return null
+  try {
+    return JSON.parse(blocks[blocks.length - 1]) as Record<string, string>
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Un champ du rapport en nombre, ou `null`.
+ *
+ * ⚠️ **`-inf` n'est pas un nombre.** Sur une source silencieuse, `loudnorm`
+ * imprime `"input_i": "-inf"` : `Number()` en fait `-Infinity`, que `JSON`
+ * sérialise en `null` et que le filtre refuserait en `measured_I`. On le traite
+ * donc comme une absence de mesure, ici, une fois, plutôt que de laisser un
+ * `-Infinity` voyager jusqu'à la base.
+ */
+function reportNumber(report: Record<string, string>, key: string): number | null {
+  const value = Number(report[key])
+  return Number.isFinite(value) ? value : null
 }
 
 /**
@@ -69,6 +134,14 @@ export interface EncodeResult {
  * Le prix assumé : **la source est décodée deux fois**. Le décodage est la part
  * bon marché du travail, et la seconde a lieu dans un job de fond où plus
  * personne ne compte les secondes.
+ *
+ * ## Le profil « radio » passe ailleurs
+ *
+ * Un titre destiné à l'antenne ne prend ni {@link encode} ni {@link encodeArchive} :
+ * il prend {@link measureLoudness} puis {@link encodeRadio} — une seule sortie, un
+ * seul débit, **normalisée en niveau**. Les deux régimes ne partagent aucun
+ * argument ffmpeg, volontairement : celui des enseignements ne doit pas bouger
+ * d'un token parce qu'une radio est arrivée.
  */
 export class FfmpegTranscoder {
   /** Mémorisé : la version ne change pas pendant la vie du processus. */
@@ -101,26 +174,245 @@ export class FfmpegTranscoder {
     return this.#version
   }
 
+  /**
+   * Ce que le conteneur dit de lui-même, en un seul appel : une piste audio ou
+   * non, la durée, le **débit** et les **étiquettes** (issue #46).
+   *
+   * Tout est demandé d'un coup parce que le JSON était déjà parsé ici : chaque
+   * champ de plus coûte une clé dans `-show_entries`, pas un aller-retour.
+   *
+   * ⚠️ **Les étiquettes se lisent à deux niveaux.** `format_tags` porte celles
+   * d'un MP4 ou d'un MP3, `stream_tags` celles d'un Ogg. Ne demander que le
+   * premier perdrait les secondes en silence — voir `readTags`, qui tranche aussi
+   * la casse des clés.
+   */
   async probe(sourcePath: string): Promise<ProbeResult> {
     const { stdout } = await execFileAsync('ffprobe', [
       '-v',
       'error',
       '-show_entries',
-      'format=duration:stream=codec_type',
+      'format=duration,bit_rate:format_tags:stream=codec_type:stream_tags',
       '-of',
       'json',
       sourcePath,
     ])
 
     const data = JSON.parse(stdout) as {
-      streams?: { codec_type?: string }[]
-      format?: { duration?: string }
+      streams?: { codec_type?: string; tags?: Record<string, string> }[]
+      format?: { duration?: string; bit_rate?: string; tags?: Record<string, string> }
     }
 
-    const hasAudio = (data.streams ?? []).some((stream) => stream.codec_type === 'audio')
+    const streams = data.streams ?? []
+    const audio = streams.find((stream) => stream.codec_type === 'audio')
+    const hasAudio = audio !== undefined
     const duration = data.format?.duration ? Number(data.format.duration) : Number.NaN
+    const bitrate = data.format?.bit_rate ? Number(data.format.bit_rate) : Number.NaN
 
-    return { hasAudio, durationSeconds: Number.isFinite(duration) ? duration : null }
+    return {
+      hasAudio,
+      durationSeconds: Number.isFinite(duration) ? duration : null,
+      bitrate: Number.isFinite(bitrate) ? bitrate : null,
+      // Une source sans piste audio n'a pas d'étiquettes à proposer : le job va
+      // échouer de façon permanente juste après (ADR-0001).
+      tags: hasAudio ? readTags(data.format?.tags, audio.tags) : NO_TAGS,
+    }
+  }
+
+  /**
+   * **Passe 1 sur 2 de la normalisation** (issue #46) : décoder la source et
+   * laisser `loudnorm` mesurer son niveau, sans rien écrire.
+   *
+   * ## Pourquoi deux passes, et non une
+   *
+   * En une passe, `loudnorm` normalise **dynamiquement** : il ne connaît pas
+   * encore le morceau, donc son gain varie au fil de la lecture. Le niveau moyen
+   * sort juste, mais une intro calme est poussée et un refrain fort est retenu —
+   * autrement dit le filtre **retouche l'intérieur** des titres. Or ce n'est pas
+   * ce qu'on lui demande : ce qui s'entend d'une antenne amateur, c'est l'écart
+   * *entre* deux titres, pas la dynamique *dans* un titre.
+   *
+   * La mesure préalable permet le mode `linear` : **un gain constant**, décidé
+   * une fois, appliqué partout. Les dynamiques du morceau sont intactes et la
+   * discothèque entière se retrouve au même niveau.
+   *
+   * ## Ce que la seconde passe coûte
+   *
+   * Un **décodage**, pas un encodage : cette passe écrit dans `/dev/null`. Le
+   * dépôt a déjà accepté un second décodage pour l'archive FLAC, et l'en-tête de
+   * cette classe dit pourquoi c'est tenable — « le décodage est la part bon
+   * marché du travail », l'encodage pesant 94 % d'un transcodage. La différence
+   * avec l'archive est que celui-ci est sur le chemin critique : il retarde le
+   * moment où le titre est diffusable.
+   *
+   * ⚠️ **Le chiffre manque.** Aucune mesure n'a été prise pour ce choix — la
+   * tranche a été écrite sans exécuter ffmpeg. C'est pourquoi la phase est
+   * chronométrée sous son propre nom (`analyseLoudness`) dans
+   * `ProcessTranscode` : le premier titre encodé en production donnera le rapport
+   * analyse/encodage dans la ligne de journal, et ce choix pourra être défendu ou
+   * défait sur un nombre. En attendant, il est justifié par la **qualité**
+   * (gain constant contre gain variable), pas par la vitesse.
+   *
+   * Rend `null` quand la mesure n'est pas exploitable (une source silencieuse
+   * rend `-inf`) : la passe d'application retombe alors sur le mode dynamique
+   * plutôt que d'échouer. Un titre normalisé approximativement vaut mieux qu'un
+   * job en échec.
+   */
+  async measureLoudness(source: string): Promise<LoudnessMeasurement | null> {
+    const stderr = await this.#run(radioAnalysisArgs(source), { label: 'analyse' })
+    const report = parseLoudnormReport(stderr)
+    if (!report) return null
+
+    const i = reportNumber(report, 'input_i')
+    const tp = reportNumber(report, 'input_tp')
+    const lra = reportNumber(report, 'input_lra')
+    const thresh = reportNumber(report, 'input_thresh')
+    const targetOffset = reportNumber(report, 'target_offset')
+
+    if (i === null || tp === null || lra === null || thresh === null || targetOffset === null) {
+      return null
+    }
+
+    return { i, tp, lra, thresh, targetOffset }
+  }
+
+  /**
+   * **Passe 2 sur 2** : la sortie radio unique (issue #46) — un seul fichier, au
+   * débit unique de `RADIO_FORMAT`, normalisé avec la mesure de
+   * {@link measureLoudness}. Ni HLS, ni rendus progressifs, ni FLAC.
+   *
+   * `onProgress` reçoit un pourcentage entier (0-99) comme pour la passe de
+   * service ; il n'est pas appelé quand la durée est inconnue.
+   *
+   * Rend la taille du fichier **et le niveau mesuré** : `loudnorm` imprime, à la
+   * fin de cette même passe, la loudness du résultat. C'est donc une mesure du
+   * fichier produit, pas une prédiction — et elle n'a coûté aucun décodage
+   * supplémentaire.
+   */
+  async encodeRadio(
+    source: string,
+    id: string,
+    measured: LoudnessMeasurement | null,
+    durationSeconds: number | null,
+    onProgress: (percent: number) => void
+  ): Promise<RadioEncodeResult> {
+    await mkdir(radioOutputDir(id), { recursive: true })
+
+    const stderr = await this.#run(
+      [
+        '-hide_banner',
+        '-y',
+        '-i',
+        source,
+        '-vn',
+        '-progress',
+        'pipe:1',
+        '-nostats',
+        ...radioOutputArgs(id, measured),
+      ],
+      { label: 'radio', durationSeconds, onProgress }
+    )
+
+    const report = parseLoudnormReport(stderr)
+    const { size } = await stat(radioTrackPath(id))
+
+    return { bytes: size, loudness: report ? this.#loudness(report) : null }
+  }
+
+  /**
+   * La taille de la piste radio déjà sur le disque, pour le point de reprise —
+   * le pendant de {@link measureDownloads}.
+   *
+   * Seule la taille : le **niveau** et les **étiquettes** ne se retrouvent pas
+   * sur un fichier déjà écrit (les étiquettes vivaient sur la source, qui a été
+   * rendue), donc ils sont persistés dès que la passe les produit. Voir
+   * `ProcessTranscode`.
+   */
+  async measureRadioTrack(id: string): Promise<number> {
+    const { size } = await stat(radioTrackPath(id))
+    return size
+  }
+
+  /** Le rapport de `loudnorm` en niveau publiable, ou `null` s'il est muet. */
+  #loudness(report: Record<string, string>): RadioLoudness | null {
+    const inputI = reportNumber(report, 'input_i')
+    const outputI = reportNumber(report, 'output_i')
+    // Sans la loudness d'entrée et celle de sortie, il n'y a pas de mesure :
+    // publier le reste laisserait croire à une vérification qui n'a pas eu lieu.
+    if (inputI === null || outputI === null) return null
+
+    return {
+      targetI: RADIO_LOUDNESS.targetI,
+      inputI,
+      inputTp: reportNumber(report, 'input_tp') ?? 0,
+      inputLra: reportNumber(report, 'input_lra') ?? 0,
+      outputI,
+      outputTp: reportNumber(report, 'output_tp') ?? 0,
+      outputLra: reportNumber(report, 'output_lra') ?? 0,
+      normalization: report.normalization_type ?? 'unknown',
+    }
+  }
+
+  /**
+   * Lance ffmpeg et rend **sa sortie d'erreur**, où `loudnorm` imprime sa mesure.
+   *
+   * Partagé par les deux passes radio seulement : `encode` et `encodeArchive`
+   * gardent leur propre `spawn`, à l'identique. Les rapprocher aurait été un
+   * refactor du régime des enseignements, que cette tranche n'a pas le droit de
+   * faire bouger — et il n'a pas besoin de la queue élargie ni du rapport.
+   */
+  async #run(
+    args: string[],
+    options: {
+      label: string
+      durationSeconds?: number | null
+      onProgress?: (percent: number) => void
+    }
+  ): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const proc = spawn('ffmpeg', args)
+
+      // Une queue large, et non les 2000 caractères des autres passes : le
+      // rapport JSON de `loudnorm` est imprimé en dernier mais ffmpeg peut le
+      // faire suivre d'avertissements de muxage, et un rapport tronqué est un
+      // rapport perdu.
+      let stderr = ''
+      proc.stderr.on('data', (chunk) => {
+        stderr = (stderr + chunk.toString()).slice(-16_000)
+      })
+
+      // Sortis de l'écouteur : la progression n'a de sens que si la durée est
+      // connue, et `-progress` n'est même pas demandé par la passe d'analyse.
+      const { onProgress, durationSeconds } = options
+      let buffer = ''
+      let lastPercent = 0
+      proc.stdout.on('data', (chunk) => {
+        if (!onProgress || !durationSeconds) return
+        buffer += chunk.toString()
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          const match = line.match(/^out_time_us=(\d+)/)
+          if (!match) continue
+          const percent = Math.min(
+            99,
+            Math.floor((Number(match[1]) / (1_000_000 * durationSeconds)) * 100)
+          )
+          if (percent > lastPercent) {
+            lastPercent = percent
+            onProgress(percent)
+          }
+        }
+      })
+
+      proc.on('error', reject)
+      proc.on('close', (code) => {
+        if (code === 0) resolve(stderr)
+        else {
+          const tail = stderr.slice(-2000)
+          reject(new Error(`ffmpeg (${options.label}) exited with code ${code}: ${tail}`))
+        }
+      })
+    })
   }
 
   /**
