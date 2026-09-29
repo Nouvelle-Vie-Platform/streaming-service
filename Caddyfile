@@ -1,17 +1,20 @@
 # Front door for the streaming service.
 #
-# `/hls/*` is served straight from the RustFS bucket (S3 path-style); everything
-# else (upload, status, SSE) is proxied to the app. Configurable via env:
+# `/hls/*`, `/dl/*` and `/radio/*` are served straight from the RustFS bucket
+# (S3 path-style); everything else (upload, status, SSE) is proxied to the app.
+# Configurable via env:
 #
 #   CADDY_SITE       site address           (default :80)
 #   APP_UPSTREAM     app host:port          (default server:3333)
 #   RUSTFS_ENDPOINT  RustFS S3 endpoint     (default http://rustfs:9000)
 #   RUSTFS_BUCKET    bucket name            (default streaming-service)
 #
-# The bucket's `hls/` prefix must allow anonymous read (the archive/ prefix stays
-# private). With MinIO/RustFS `mc`:
+# The bucket's `hls/`, `dl/` and `radio/` prefixes must allow anonymous read (the
+# archives/ prefix stays private). With MinIO/RustFS `mc`:
 #
 #   mc anonymous set download rustfs/<bucket>/hls
+#   mc anonymous set download rustfs/<bucket>/dl
+#   mc anonymous set download rustfs/<bucket>/radio
 
 {
 	admin off
@@ -38,6 +41,23 @@
 	# the HLS. reverse_proxy is transparent to Range/ETag; do NOT add `encode`
 	# here: compressing these bytes would break byte-range resume (spike #184).
 	handle /dl/* {
+		header {
+			Access-Control-Allow-Origin *
+			Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+			Access-Control-Allow-Headers "Range, Content-Type"
+			Access-Control-Expose-Headers "Content-Length, Content-Range, Accept-Ranges, ETag"
+		}
+		@preflight method OPTIONS
+		respond @preflight 204
+		rewrite * /{$RUSTFS_BUCKET:streaming-service}{uri}
+		reverse_proxy {$RUSTFS_ENDPOINT:http://rustfs:9000}
+	}
+
+	# Radio profile output (issue #46) — one normalized .m4a per track, served
+	# from RustFS like the HLS. Unsigned and permanent: a signed URL would expire
+	# mid-broadcast. Same rule as /dl/*: do NOT add `encode` here — compressing
+	# these bytes breaks byte-range resume (spike #184), and liquidsoap seeks.
+	handle /radio/* {
 		header {
 			Access-Control-Allow-Origin *
 			Access-Control-Allow-Methods "GET, HEAD, OPTIONS"

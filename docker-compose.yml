@@ -73,7 +73,8 @@ services:
         mc mb --ignore-existing "rustfs/$$RUSTFS_BUCKET";
         mc anonymous set download "rustfs/$$RUSTFS_BUCKET/hls";
         mc anonymous set download "rustfs/$$RUSTFS_BUCKET/dl";
-        echo "bucket $$RUSTFS_BUCKET ready (hls/ + dl/ public)";
+        mc anonymous set download "rustfs/$$RUSTFS_BUCKET/radio";
+        echo "bucket $$RUSTFS_BUCKET ready (hls/ + dl/ + radio/ public)";
 
   # One-shot: run migrations against the external Postgres, then exit. Booting
   # the app also opens the Redis connection, so external Redis must be up too.
@@ -116,4 +117,5 @@ services:
 # Caddy is **not** part of this stack: in production it is an independent,
 # externally-operated front door. Point it at the app and RustFS with the
 # provided Caddyfile (see the README). The `createbucket` step above still marks
-# the bucket's hls/ prefix publicly readable so that external Caddy can serve it.
+# the bucket's hls/, dl/ and radio/ prefixes publicly readable so that external
+# Caddy can serve them.

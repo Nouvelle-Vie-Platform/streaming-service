@@ -9,7 +9,7 @@
 # Il doit appartenir à `deploy` pour être écrit sans root :
 #   sudo install -o deploy -g deploy -m 644 /dev/null /etc/caddy/eenv-stream-upstream.caddy
 #
-# ⚠️ AUCUN `encode` au niveau du site — voir le bloc /dl/* plus bas.
+# ⚠️ AUCUN `encode` au niveau du site — voir les blocs /dl/* et /radio/* plus bas.
 # ==============================================================================
 
 stream.eenv.brainsial.com {
@@ -53,6 +53,29 @@ stream.eenv.brainsial.com {
 	# fourre-tout ci-dessous, et non en tête de site.
 	# --------------------------------------------------------------------------
 	handle /dl/* {
+		header {
+			Access-Control-Allow-Origin *
+			Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+			Access-Control-Allow-Headers "Range, Content-Type"
+			Access-Control-Expose-Headers "Content-Length, Content-Range, Accept-Ranges, ETag"
+		}
+		@preflight method OPTIONS
+		respond @preflight 204
+		rewrite * /eenv-streaming{uri}
+		reverse_proxy http://127.0.0.1:9000
+	}
+
+	# --------------------------------------------------------------------------
+	# Sortie du profil « radio » (issue #46) — un `.m4a` normalisé par titre,
+	# servi depuis RustFS comme le HLS. L'URL est **non signée et permanente** :
+	# une URL signée n'expirerait pas pendant une pause mais **en pleine
+	# diffusion**, et l'antenne se tairait au milieu d'un titre.
+	#
+	# ⚠️ NE JAMAIS ajouter `encode` ici, ni au niveau du site — même raison que le
+	# bloc /dl/* : compresser ces octets casse la reprise par plage (spike #184),
+	# et liquidsoap se déplace dans le fichier.
+	# --------------------------------------------------------------------------
+	handle /radio/* {
 		header {
 			Access-Control-Allow-Origin *
 			Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
