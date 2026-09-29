@@ -10,8 +10,15 @@ import transmit from '@adonisjs/transmit/services/main'
  * (jalon F, #6) on the per-resource channel `transcodes/<id>`.
  *
  * The payload is built through `TranscodeTransformer` — the exact shape the
- * status poll serves (`id, status, progress, outputPlaylist, error`) — so a live
- * client and a polling client see one contract.
+ * status poll serves (`id, status, progress, outputPlaylist, error`, plus
+ * `radioTrack` on the `radio` profile at COMPLETED) — so a live client and a
+ * polling client see one contract.
+ *
+ * L'événement du **firehose** d'ops porte la même sortie, et **sans redire la
+ * règle** : il recopie le champ que le transformateur a déjà décidé de publier ou
+ * non. Une page d'ops qui ne verrait que `outputPlaylist: null` présenterait
+ * chaque radio réussie comme « terminée sans média » — une fausse alerte
+ * récurrente, qui apprend à ignorer les vraies (ADR-0010).
  *
  * Broadcasting is routed through Transmit's Redis transport (config/transmit.ts)
  * so a push from the worker process reaches SSE clients on the HTTP server.
@@ -39,6 +46,11 @@ export class TranscodePublisher {
       progress: payload.progress,
       error: payload.error,
       outputPlaylist: payload.outputPlaylist,
+      // **Aucune garde ici, et c'est le point.** `COMPLETED` seulement, absent
+      // hors du profil radio : ces deux règles vivent dans `TranscodeTransformer`
+      // et l'événement se contente de relayer ce qu'elles ont laissé passer. Les
+      // réécrire ici ferait deux jumelles qui finiraient par différer.
+      ...(payload.radioTrack ? { radioTrack: payload.radioTrack } : {}),
     })
   }
 }

@@ -11,6 +11,8 @@ import {
   downloadOutputDir,
   hlsKeyPrefix,
   hlsOutputDir,
+  radioKeyPrefix,
+  radioOutputDir,
 } from '#transcodes/support/hls'
 import { RessourceNotExistsException } from '#common/exceptions/ressource_not_exists_exception'
 import { PlatformLang } from '#common/services/http_service'
@@ -75,6 +77,14 @@ export class DeleteTranscode {
     // on both ingestion paths — purge them too, or they outlive their row.
     await this.rustfs.deletePrefix(downloadKeyPrefix(params.id))
 
+    // La piste radio a de même son préfixe (issue #46). **Repris sans regarder le
+    // profil** : un préfixe vide n'efface rien et ce n'est pas une erreur, alors
+    // qu'une reprise qui se fie à la colonne laisserait des octets servables le
+    // jour où la colonne et les octets ne s'accordent pas — exactement ce que
+    // l'ADR-0008 reproche à `status`. La reprise est la seule chose qui doit
+    // être vraie dans tous les cas.
+    await this.rustfs.deletePrefix(radioKeyPrefix(params.id))
+
     // An Archive audio exists only on the upload path (ADR-0007). Prefer the
     // recorded key, and fall back to the deterministic one so an archive whose
     // job pushed the FLAC without yet recording it is still reclaimed.
@@ -86,6 +96,7 @@ export class DeleteTranscode {
     // a PENDING deposit still holds its whole Source on disk.
     await rm(hlsOutputDir(params.id), { recursive: true, force: true })
     await rm(downloadOutputDir(params.id), { recursive: true, force: true })
+    await rm(radioOutputDir(params.id), { recursive: true, force: true })
     await rm(archivePath(params.id), { force: true })
     await this.sourceStore.removeFor(params.id)
 

@@ -1,5 +1,6 @@
 import Transcode from '#transcodes/models/transcode'
-import type { SourceKind } from '#transcodes/support/transcode_enums'
+import { DEFAULT_PROFILE } from '#transcodes/support/transcode_enums'
+import type { SourceKind, TranscodeProfile } from '#transcodes/support/transcode_enums'
 import { fileKind } from '#common/utils/file_agent'
 
 export interface CreateTranscodeParams {
@@ -13,6 +14,11 @@ export interface CreateTranscodeParams {
   callbackUrl?: string
   /** Optional per-upload HMAC secret used to sign the webhook body. */
   callbackSecret?: string
+  /**
+   * Le profil demandé (issue #46). Absent = `teaching`, le régime historique :
+   * une requête qui ne dit rien obtient exactement ce qu'elle obtenait avant.
+   */
+  profile?: TranscodeProfile
 }
 
 /**
@@ -38,6 +44,7 @@ export class CreateTranscode {
       sourceKind,
       callbackUrl: params.callbackUrl ?? null,
       callbackSecret: params.callbackSecret ?? null,
+      profile: params.profile ?? DEFAULT_PROFILE,
     })
   }
 }

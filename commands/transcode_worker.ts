@@ -44,6 +44,9 @@ export default class TranscodeWorker extends BaseCommand {
             id: job.data.id,
             source: job.data.source,
             remote: job.data.remote,
+            // Absent sur un job enfilé par la version précédente : l'action
+            // retombe alors sur le régime des enseignements (issue #46).
+            profile: job.data.profile,
           })
         } catch (error) {
           if (error instanceof NoAudioTrackException) {
@@ -104,6 +107,7 @@ export default class TranscodeWorker extends BaseCommand {
           id: job.data.id,
           source: job.data.source,
           remote: job.data.remote,
+          profile: job.data.profile,
         })
         logger.info({ jobId: job.id }, 'archive completed')
       },

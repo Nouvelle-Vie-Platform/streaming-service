@@ -3,13 +3,13 @@
 Blue/green sur le VPS Contabo, derrière un Caddy qui tourne **sur l'hôte**. PostgreSQL, Redis et
 RustFS sont **externes** ; ce stack les rejoint par leurs réseaux Docker existants.
 
-| | |
-|---|---|
-| Domaine | `https://stream.eenv.brainsial.com` |
-| Dossier VPS | `/opt/eenv-stream/` |
-| Ports (127.0.0.1) | `3002` bleu · `3003` vert |
-| Image | `ghcr.io/nouvelle-vie-platform/streaming-service` |
-| Bucket | `eenv-streaming` — `hls/` et `dl/` publics, `archives/` privé |
+|                   |                                                                         |
+| ----------------- | ----------------------------------------------------------------------- |
+| Domaine           | `https://stream.eenv.brainsial.com`                                     |
+| Dossier VPS       | `/opt/eenv-stream/`                                                     |
+| Ports (127.0.0.1) | `3002` bleu · `3003` vert                                               |
+| Image             | `ghcr.io/nouvelle-vie-platform/streaming-service`                       |
+| Bucket            | `eenv-streaming` — `hls/`, `dl/` et `radio/` publics, `archives/` privé |
 
 ## Ce qui le distingue du portail
 
@@ -84,7 +84,8 @@ répondent ; la vérification du worker évite le cas où le serveur est sain ma
 ## ⚠️ Deux choses à ne jamais faire
 
 **Ne jamais ajouter `encode` au niveau du site Caddy.** La compression casse la reprise de
-téléchargement par plage sur `/dl/*` (spike #184). Elle est déclarée dans le seul bloc fourre-tout.
+téléchargement par plage sur `/dl/*` (spike #184) et le déplacement de l'antenne dans un `/radio/*`
+(ADR-0010). Elle est déclarée dans le seul bloc fourre-tout.
 
 **Ne jamais changer `HLS_PUBLIC_BASE_URL`.** Cette URL est écrite en dur en base dans chaque
 enseignement transcodé (ADR-0006). La modifier casse **tous** les audios déjà publiés.

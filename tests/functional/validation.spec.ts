@@ -39,4 +39,15 @@ test.group('Validation', (group) => {
       .json({ sourceUrl: 'not-a-url' })
     response.assertStatus(422)
   })
+
+  test('URL ingestion with an unknown profile is 422', async ({ client }) => {
+    // Un profil inventé est refusé au bord (issue #46). Accepté, il atterrirait
+    // en base et ferait échouer un worker une heure plus tard, loin de l'appel
+    // qui s'est trompé.
+    const response = await client
+      .post('/transcodes')
+      .header('Authorization', 'Bearer ok')
+      .json({ sourceUrl: 'https://bucket.example.com/titre.mp3', profile: 'gospel' })
+    response.assertStatus(422)
+  })
 })

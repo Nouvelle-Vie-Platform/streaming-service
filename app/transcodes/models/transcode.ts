@@ -2,7 +2,7 @@ import { compose } from '@adonisjs/core/helpers'
 import { column } from '@adonisjs/lucid/orm'
 import { withUuid } from '#common/mixins/with_uuid'
 import { TranscodeSchema } from '#database/schema'
-import type { DownloadRenditionInfo } from '#transcodes/support/hls'
+import type { DownloadRenditionInfo, RadioTrackInfo } from '#transcodes/support/hls'
 
 /**
  * The durable state of a Transcode — the source of truth for its lifecycle
@@ -33,4 +33,26 @@ export default class Transcode extends compose(TranscodeSchema, withUuid()) {
     },
   })
   declare downloads: DownloadRenditionInfo[] | null
+
+  /**
+   * La piste radio (issue #46), surchargée pour la même raison que `downloads` :
+   * rendre explicite l'aller-retour jsonb.
+   *
+   * Le piège du driver `pg` n'est **pas** le même dans les deux sens ici — un
+   * objet JS, lui, est bien sérialisé en JSON (c'est le *tableau* qui devenait un
+   * littéral de tableau PostgreSQL et faisait échouer l'insertion). La lecture,
+   * en revanche, pose la même question : selon le chemin, le driver rend une
+   * valeur déjà décodée ou la chaîne brute. `consume` tolère les deux, et
+   * `prepare` reste explicite pour que les deux colonnes jsonb de ce modèle se
+   * lisent de la même façon — une discipline, pas deux.
+   */
+  @column({
+    prepare: (value: RadioTrackInfo | null) =>
+      value === null || value === undefined ? value : JSON.stringify(value),
+    consume: (value: unknown): RadioTrackInfo | null => {
+      if (value === null || value === undefined) return null
+      return (typeof value === 'string' ? JSON.parse(value) : value) as RadioTrackInfo
+    },
+  })
+  declare radioTrack: RadioTrackInfo | null
 }

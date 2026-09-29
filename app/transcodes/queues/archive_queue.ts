@@ -1,3 +1,4 @@
+import type { TranscodeProfile } from '#transcodes/support/transcode_enums'
 import { queueConnection } from '#config/queue'
 import { withdrawJob } from '#transcodes/support/withdraw_job'
 import { Queue } from 'bullmq'
@@ -11,6 +12,12 @@ export interface ArchiveJobData {
   source: string
   /** true = URL source: no local Source to delete, no FLAC to archive. */
   remote: boolean
+  /**
+   * Le profil du transcodage (issue #46). `radio` **n'a jamais d'archive FLAC** :
+   * ce job s'y réduit au nettoyage du staging. Facultatif comme sur la file de
+   * transcodage, pour la même raison de bascule.
+   */
+  profile?: TranscodeProfile
 }
 
 /**
