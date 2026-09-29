@@ -81,28 +81,52 @@ export class PhaseTimings {
    * c'est-à-dire à n'avoir rien mesuré.
    */
   log(id: string, context: LogContext = {}): void {
-    const total = Math.round(performance.now() - this.#started)
-    const audio = context.audioSeconds ?? null
+    const payload = this.payload(id, context)
+    logger.info(payload, `transcode ${id} terminé en ${(payload.totalMs / 1000).toFixed(1)} s`)
+  }
 
-    logger.info(
-      {
-        transcode: id,
-        totalMs: total,
-        ...(context.regime ? { regime: context.regime } : {}),
-        ...(audio ? { audioSeconds: Math.round(audio) } : {}),
-        // **Le rapport au temps réel est calculé ici**, et pas laissé à celui
-        // qui lit. « encode : 1006 s » ne dit pas si c'est rapide ou lent ;
-        // « ×6,4 » le dit d'un coup d'œil, et c'est ce chiffre-là qui désigne
-        // un encodage sérialisé sur un seul fil plutôt qu'une machine chargée.
-        ...(audio ? { realtimeFactor: Number((audio / (total / 1000)).toFixed(1)) } : {}),
-        phases: Object.fromEntries(
-          this.#phases.map(({ phase, ms, detail }) => [
-            phase,
-            detail === undefined ? ms : { ms, items: detail },
-          ])
-        ),
-      },
-      `transcode ${id} terminé en ${(total / 1000).toFixed(1)} s`
-    )
+  /**
+   * Ce que [log] journalise, **sans le journaliser**.
+   *
+   * Séparé pour que les règles du champ — pas de rapport sans étape mesurée, pas
+   * de `encodeFactor` sans encodage — s'éprouvent sur un objet plutôt que sur
+   * une sortie de journal capturée. Un test qui n'aurait vérifié que « ça ne
+   * lève pas » aurait laissé passer le « ×26730 » qui a motivé cette garde.
+   */
+  payload(id: string, context: LogContext = {}): Record<string, unknown> & { totalMs: number } {
+    const total = Math.round(performance.now() - this.#started)
+
+    // ⚠️ **Aucun rapport au temps réel si rien n'a été traité.**
+    //
+    // Mesuré en production : le job d'archivage d'une ingestion par URL n'a rien
+    // à archiver (l'original vit à son URL), il se réduit au nettoyage — et la
+    // ligne annonçait fièrement « ×26730 », c'est-à-dire 5533 s d'audio divisées
+    // par 0,2 s de `rm`. Un nombre qui a l'air d'une mesure et n'en est pas est
+    // pire que pas de nombre : il se recopie dans un rapport, et il se défend.
+    const measured = this.#phases.length > 0
+    const audio = measured ? (context.audioSeconds ?? null) : null
+
+    // Le rapport de l'étape qui est en cause, quand elle existe. C'est lui qui
+    // départage « la machine est chargée » de « les encodeurs se suivent dans un
+    // seul fil » — `totalMs` y mêle l'envoi, qui ne pèse que 5 %.
+    const encoding = this.#phases.find(({ phase }) => phase.startsWith('encode'))
+
+    return {
+      transcode: id,
+      totalMs: total,
+      ...(context.regime ? { regime: context.regime } : {}),
+      ...(measured ? {} : { note: 'rien à mesurer' }),
+      ...(audio ? { audioSeconds: Math.round(audio) } : {}),
+      ...(audio ? { realtimeFactor: Number((audio / (total / 1000)).toFixed(1)) } : {}),
+      ...(audio && encoding
+        ? { encodeFactor: Number((audio / (encoding.ms / 1000)).toFixed(1)) }
+        : {}),
+      phases: Object.fromEntries(
+        this.#phases.map(({ phase, ms, detail }) => [
+          phase,
+          detail === undefined ? ms : { ms, items: detail },
+        ])
+      ),
+    }
   }
 }
