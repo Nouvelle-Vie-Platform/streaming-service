@@ -234,10 +234,13 @@ export const RADIO_FORMAT = {
    *
    * Le filtre `loudnorm` travaille en interne à **192 kHz** et c'est aussi la
    * fréquence de sa sortie : sans `-ar`, l'encodeur AAC reçoit du 192 kHz et
-   * écrit ce qu'il peut en porter — **96 kHz**, son plafond, mesuré sur
-   * ffmpeg 9.0.1 depuis une source en 48 kHz. Donc une sortie à une fréquence
-   * que personne n'a demandée, deux fois celle de la source, pour un contenu
-   * qui ne porte rien au-dessus.
+   * écrit ce qu'il peut en porter — **96 kHz**, son plafond. Donc une sortie à une
+   * fréquence que personne n'a demandée, deux fois celle de la source, pour un
+   * contenu qui ne porte rien au-dessus.
+   *
+   * Vérifié sur les **deux** versions qui comptent : ffmpeg 9.0.1 (poste de dev) et
+   * 7.1.5 (l'image de production, Debian trixie). Les deux montent à 96 kHz sans
+   * `-ar` et redescendent à 48 kHz avec.
    *
    * **Ce n'est pas le poids qui pose problème** : `-b:a` est honoré et le
    * fichier ne grossit que de ~2 % (50 464 contre 49 345 octets sur trois
@@ -318,11 +321,25 @@ export type RadioLoudness = {
   /**
    * `linear` ou `dynamic`, tel que `loudnorm` l'annonce.
    *
-   * `linear` = un gain constant, les dynamiques du titre sont intactes ; c'est
-   * le cas normal et le but du double décodage. `dynamic` signale que le gain
-   * demandé aurait fait dépasser le pic cible et que le filtre a compressé —
-   * le titre sort au bon niveau mais il a été retouché, et c'est la seule chose
-   * que ce champ existe pour dire.
+   * `linear` = un gain constant : les dynamiques du titre sont intactes, seul son
+   * niveau bouge. C'est le but du double décodage, et c'est mesuré — l'écart entre
+   * un passage fort et un passage faible ressort **inchangé** (8,0 LU en entrée
+   * comme en sortie), là où le mode dynamique le rabote de 2,3 LU.
+   *
+   * `dynamic` = le filtre a fait varier son gain, donc **il a retouché l'intérieur
+   * du titre**. Le niveau moyen est juste, mais une intro calme a été poussée.
+   *
+   * ⚠️ **Ce champ n'est pas un ornement, et `dynamic` n'est pas un cas rare.**
+   * `loudnorm` refuse le mode linéaire dès qu'une des deux conditions manque :
+   * `measured_LRA` > `LRA` cible (un gain constant ne réduit pas une plage), ou
+   * `measured_TP + gain` > `TP` cible. La seconde se réduit à `TP − I ≤ 14,5 LU`,
+   * une propriété de la source et non de son niveau — et du bruit rose nu est
+   * déjà à la limite. Un master écrêté passe, un enregistrement capté en direct
+   * et non traité, souvent pas.
+   *
+   * C'est donc le **seul** endroit où l'on apprend qu'un titre donné a été
+   * comprimé, et la proportion de `dynamic` sur l'ensemble des pistes est ce qui
+   * dira s'il faut un limiteur en amont (ADR-0010).
    */
   normalization: string
 }

@@ -51,17 +51,25 @@ async function probeField(path: string, entry: string): Promise<string> {
 }
 
 /**
- * La loudness intégrée d'un fichier, **mesurée par un autre chemin que celui
- * qu'on teste**.
+ * Le résumé d'`ebur128` sur un fichier — ou sur **une tranche** de fichier, quand
+ * `slice` est donné : la loudness intégrée et la plage de loudness, **mesurées par
+ * un autre chemin que celui qu'on teste**.
  *
- * `loudnorm` publie son propre chiffre ; le vérifier avec `loudnorm` serait
+ * `loudnorm` publie ses propres chiffres ; les vérifier avec `loudnorm` serait
  * demander au témoin de confirmer son témoignage. `ebur128` est l'autre filtre
  * d'ffmpeg, indépendant, et c'est lui qui tranche ici.
+ *
+ * `-ss`/`-t` sont placés **avant** `-i` : c'est ce qui fait découper la source à
+ * la lecture, et non le fichier entier décodé puis jeté.
  */
-async function integratedLoudness(path: string): Promise<number> {
+async function ebur128(
+  path: string,
+  slice?: { from: number; seconds: number }
+): Promise<{ i: number; lra: number }> {
   const { stderr } = await execFileAsync('ffmpeg', [
     '-hide_banner',
     '-nostats',
+    ...(slice ? ['-ss', String(slice.from), '-t', String(slice.seconds)] : []),
     '-i',
     path,
     '-af',
@@ -70,11 +78,20 @@ async function integratedLoudness(path: string): Promise<number> {
     'null',
     '-',
   ])
-  // Le résumé imprime « I: -16.0 LUFS » ; la première occurrence est la
-  // loudness intégrée (celles qui suivent appartiennent à la plage).
-  const match = /I:\s+(-?\d+(?:\.\d+)?) LUFS/.exec(stderr)
-  if (!match) throw new Error(`ebur128 n'a rien dit de lisible :\n${stderr.slice(-1500)}`)
-  return Number(match[1])
+  // Le résumé imprime « I:  <n> LUFS » puis « LRA:  <n> LU » ; dans les deux cas
+  // la première occurrence est la bonne — celles qui suivent appartiennent au
+  // détail de la plage (`LRA low`, `LRA high`), et le deux-points collé au nom
+  // les écarte.
+  const i = /I:\s+(-?\d+(?:\.\d+)?) LUFS/.exec(stderr)
+  const lra = /LRA:\s+(-?\d+(?:\.\d+)?) LU/.exec(stderr)
+  if (!i || !lra) throw new Error(`ebur128 n'a rien dit de lisible :\n${stderr.slice(-1500)}`)
+  return { i: Number(i[1]), lra: Number(lra[1]) }
+}
+
+/** La seule loudness intégrée, pour les tests qui ne regardent pas la plage. */
+async function integratedLoudness(path: string): Promise<number> {
+  const summary = await ebur128(path)
+  return summary.i
 }
 
 test.group('profil radio — vraie passe ffmpeg, niveau normalisé (issue #46)', (group) => {
@@ -281,4 +298,231 @@ test.group('profil radio — vraie passe ffmpeg, niveau normalisé (issue #46)',
     assert.deepEqual(probe.tags, { title: null, artist: null, album: null })
     assert.isTrue(probe.hasAudio)
   })
+})
+
+/**
+ * **Le gain constant, prouvé sur un fichier produit** — le trou que la tranche
+ * laissait ouvert (issue #46).
+ *
+ * Les quatre autres tests qui mentionnent `linear` portent sur des doublures ou
+ * sur la **chaîne d'arguments** passée à ffmpeg. Aucun ne regardait une vraie
+ * sortie. Or c'est le gain constant qui justifie le **second décodage**, et donc
+ * les +76 % de temps de mur mesurés dans l'ADR-0010 : sans ce groupe, le seul
+ * argument de la décision la plus coûteuse de la tranche n'était vérifié nulle
+ * part.
+ *
+ * ## Pourquoi cette source, et pas du bruit rose nu
+ *
+ * Le bruit rose est le bon signal pour le **débit** (incompressible) mais c'est un
+ * cas **dégénéré** pour la normalisation : sa plage de loudness est quasi nulle,
+ * donc « préserver la dynamique » n'y veut rien dire. Il faut une source qui ait
+ * une vraie plage, et qui remplisse en plus les deux conditions auxquelles
+ * `loudnorm` soumet son mode `linear` — voir {@link buildDynamicSource}.
+ */
+test.group('profil radio — le gain constant, sur une vraie sortie (issue #46)', (group) => {
+  /** Durée d'un bloc fort ou faible, en secondes. */
+  const BLOCK_SECONDS = 10
+  /** Quatre blocs : fort, faible, fort, faible. */
+  const DYNAMIC_SECONDS = BLOCK_SECONDS * 4
+  /** Le creux, en fraction d'amplitude — ≈ 8 LU sous les sommets. */
+  const QUIET_FACTOR = 0.4
+
+  const ids = {
+    linear: `test-radio-linear-${Date.now()}`,
+    dynamique: `test-radio-dynamique-${Date.now()}`,
+  }
+  let sourcePath: string
+  let measured: Awaited<ReturnType<FfmpegTranscoder['measureLoudness']>>
+  let linearResult: Awaited<ReturnType<FfmpegTranscoder['encodeRadio']>>
+
+  /**
+   * Une source à **dynamique réelle**, taillée pour que `loudnorm` accepte son
+   * mode `linear`. Les deux conditions ont été trouvées au banc, et elles
+   * expliquent la forme de ce signal :
+   *
+   * 1. **`measured_LRA` ≤ `LRA` cible (11 LU).** Un gain constant ne peut pas
+   *    réduire une plage ; si la source déborde la cible, `loudnorm` retombe en
+   *    dynamique. D'où des blocs à ≈ 8 LU d'écart, et non 20.
+   * 2. **`measured_TP` + gain ≤ `TP` cible (-1,5 dBTP).** C'est la contrainte qui
+   *    mord le plus, et elle est contre-intuitive : elle porte sur le **facteur de
+   *    crête**, pas sur la dynamique. Du bruit rose nu a ≈ 14 LU entre son pic et
+   *    sa loudness ; lui creuser des blocs faibles abaisse la loudness sans
+   *    toucher le pic, le facteur de crête grimpe, et le gain demandé ferait
+   *    dépasser le pic cible. C'est pourquoi le bruit passe ici par un
+   *    **limiteur** : il en ressort avec un facteur de crête d'environ 12 LU, ce
+   *    qui laisse la marge — et c'est aussi ce à quoi ressemble un master de
+   *    musique, écrêté avant livraison.
+   *
+   * Les blocs durent **10 secondes** parce que le mode dynamique de `loudnorm`
+   * suit lentement : sur des blocs courts son gain n'a pas le temps de bouger et
+   * les deux modes rendent le même fichier. C'est cette lenteur qu'on met en
+   * évidence.
+   */
+  async function buildDynamicSource(path: string): Promise<void> {
+    await execFileAsync('ffmpeg', [
+      '-hide_banner',
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'anoisesrc=c=pink:a=1.0,alimiter=limit=0.25:level=disabled',
+      '-t',
+      String(DYNAMIC_SECONDS),
+      '-af',
+      `volume='if(lt(mod(t,${BLOCK_SECONDS * 2}),${BLOCK_SECONDS}),1,${QUIET_FACTOR})':eval=frame`,
+      '-c:a',
+      'pcm_s16le',
+      path,
+    ])
+  }
+
+  /**
+   * L'écart de niveau **entre un bloc fort et un bloc faible** du même fichier.
+   *
+   * C'est la mesure qui tranche, et elle est plus directe que la plage globale :
+   * un gain constant la laisse intacte, un gain qui suit le morceau la rabote.
+   * Les deux secondes de marge écartent les transitions, où le filtre est en
+   * train de bouger.
+   */
+  async function blockGap(path: string): Promise<number> {
+    const loud = await ebur128(path, { from: 1, seconds: BLOCK_SECONDS - 2 })
+    const quiet = await ebur128(path, { from: BLOCK_SECONDS + 1, seconds: BLOCK_SECONDS - 2 })
+    return loud.i - quiet.i
+  }
+
+  group.setup(async () => {
+    const dir = app.makePath('storage/test-sources')
+    await mkdir(dir, { recursive: true })
+    sourcePath = join(dir, `${ids.linear}.wav`)
+    await buildDynamicSource(sourcePath)
+
+    const transcoder = new FfmpegTranscoder()
+    measured = await transcoder.measureLoudness(sourcePath)
+
+    // La sortie **du régime réel** : deux passes, la mesure repassée au filtre.
+    linearResult = await transcoder.encodeRadio(
+      sourcePath,
+      ids.linear,
+      measured,
+      DYNAMIC_SECONDS,
+      () => {}
+    )
+
+    // Et la **contre-épreuve** : la même source, la même cible, mais sans mesure
+    // préalable — donc le mode dynamique, c'est-à-dire exactement ce que le
+    // second décodage achète. Sans elle, « la plage est préservée » pourrait être
+    // vrai sans que le gain constant y soit pour quoi que ce soit.
+    await transcoder.encodeRadio(sourcePath, ids.dynamique, null, DYNAMIC_SECONDS, () => {})
+
+    return async () => {
+      await rm(sourcePath, { force: true })
+      for (const id of Object.values(ids)) {
+        await rm(radioOutputDir(id), { recursive: true, force: true })
+      }
+    }
+  })
+
+  test('la source a une plage réelle, et remplit les conditions du mode linéaire', async ({
+    assert,
+  }) => {
+    assert.isNotNull(measured, "la passe d'analyse n'a rien mesuré")
+
+    // Sans plage, « préserver la dynamique » ne veut rien dire : c'est le reproche
+    // fait au bruit rose nu, et cette assertion empêche la source de glisser vers
+    // ce cas dégénéré sans qu'on s'en aperçoive.
+    assert.isAbove(
+      measured!.lra,
+      4,
+      `plage de la source ${measured!.lra} LU : trop plate pour prouver quoi que ce soit`
+    )
+
+    // Condition 1 : un gain constant ne réduit pas une plage.
+    assert.isAtMost(
+      measured!.lra,
+      RADIO_LOUDNESS.targetLra,
+      `plage ${measured!.lra} LU au-delà de la cible : loudnorm refusera le mode linéaire`
+    )
+
+    // Condition 2 : le gain ne doit pas faire dépasser le pic cible. C'est la
+    // contrainte qui mord, et la marge est écrite pour qu'un futur réglage de la
+    // source qui la mangerait se signale ici plutôt que par un test capricieux.
+    const gain = RADIO_LOUDNESS.targetI - measured!.i
+    const peakAfterGain = measured!.tp + gain
+    assert.isBelow(
+      peakAfterGain,
+      RADIO_LOUDNESS.targetTp,
+      `pic après gain ${peakAfterGain.toFixed(2)} dBTP : au-delà de la cible, loudnorm retombera en dynamique`
+    )
+  }).timeout(180_000)
+
+  test('loudnorm applique bien un gain constant, et le dit', async ({ assert }) => {
+    assert.isNotNull(linearResult.loudness, 'aucun niveau publié')
+
+    // **L'assertion qui manquait.** Le champ vient du filtre lui-même, sur le
+    // fichier qu'il vient d'écrire : c'est la seule preuve qu'un gain constant a
+    // réellement été appliqué, et non pas seulement demandé dans la ligne de
+    // commande.
+    assert.equal(
+      linearResult.loudness!.normalization,
+      'linear',
+      'loudnorm est retombé en mode dynamique : le second décodage ne sert alors à rien'
+    )
+  }).timeout(180_000)
+
+  test('le gain constant préserve la dynamique, là où le mode dynamique la comprime', async ({
+    assert,
+  }) => {
+    const sourceGap = await blockGap(sourcePath)
+    const linearGap = await blockGap(radioTrackPath(ids.linear))
+    const dynamicGap = await blockGap(radioTrackPath(ids.dynamique))
+
+    // **C'est l'argument de qualité de l'ADR-0010, et le voici sur des octets.**
+    // Le gain constant déplace le morceau en bloc : l'écart entre un passage fort
+    // et un passage faible sort tel qu'il est entré.
+    assert.closeTo(
+      linearGap,
+      sourceGap,
+      1,
+      `le gain constant a modifié la dynamique : source ${sourceGap} LU, sortie ${linearGap} LU`
+    )
+
+    // Et la contre-épreuve, qui donne son sens à l'assertion précédente : en une
+    // passe, le gain suit le morceau, pousse les passages calmes et retient les
+    // forts — l'écart se referme. Un titre sorti ainsi est au bon niveau **mais il
+    // a été retouché à l'intérieur**.
+    assert.isBelow(
+      dynamicGap,
+      sourceGap - 1.2,
+      `le mode dynamique n'a rien comprimé (source ${sourceGap} LU, sortie ${dynamicGap} LU) : la source ne discrimine plus les deux régimes`
+    )
+
+    // Les deux modes doivent être séparés par une marge franche, sinon ce test ne
+    // prouve rien de ce que la tranche a payé.
+    assert.isAbove(
+      linearGap - dynamicGap,
+      1.2,
+      `linéaire ${linearGap} LU et dynamique ${dynamicGap} LU trop proches`
+    )
+  }).timeout(180_000)
+
+  test('et le niveau intégré atteint quand même la cible', async ({ assert }) => {
+    // Préserver la dynamique ne dispense pas de faire le travail : la sortie doit
+    // être au niveau de toutes les autres, sinon la tranche a échoué à son seul
+    // objet.
+    const out = await ebur128(radioTrackPath(ids.linear))
+    assert.closeTo(
+      out.i,
+      RADIO_LOUDNESS.targetI,
+      1.5,
+      `${out.i} LUFS, cible ${RADIO_LOUDNESS.targetI}`
+    )
+
+    // Le niveau publié est bien celui du fichier, comme sur le groupe précédent.
+    assert.closeTo(
+      linearResult.loudness!.outputI,
+      out.i,
+      1,
+      `niveau annoncé ${linearResult.loudness!.outputI}, mesuré ${out.i}`
+    )
+  }).timeout(180_000)
 })

@@ -65,11 +65,82 @@ choix se tient malgré ce surcoût, pour trois raisons :
    de `encode`, dans la ligne de journal existante : les premiers titres réels
    confirmeront ou défairont ce tableau d'eux-mêmes.
 
-⚠️ **Ce qui est mesuré, c'est le coût, pas le gain.** Sur du bruit rose les deux modes
-annoncent `normalization_type: dynamic` : une source à LRA nulle est un cas dégénéré où
-`linear` n'a rien à faire. La supériorité du gain constant reste donc l'argument de
-**qualité** exposé ci-dessus, et non un chiffre — elle ne s'observera que sur de la vraie
-musique.
+### Et le gain, mesuré lui aussi
+
+Le coût ne prouvait rien de ce qu'on achetait avec. Le gain est maintenant **vérifié sur
+un fichier produit**, par le groupe « le gain constant, sur une vraie sortie » de
+`tests/functional/radio_normalisation.spec.ts`. Source à dynamique réelle, blocs de 10 s
+à ≈ 8 LU d'écart, bruit rose passé au limiteur :
+
+|                 | plage source | écart fort/faible           | mode      | I sortie  |
+| --------------- | ------------ | --------------------------- | --------- | --------- |
+| **deux passes** | 8,0 LU       | **8,0 LU — intact**         | `linear`  | **-16,1** |
+| une passe       | 8,0 LU       | 5,7 LU — comprimé de 2,3 LU | `dynamic` | -17,6     |
+
+Les deux passes **préservent la dynamique interne** ; la passe unique la rabote de 2,3 LU,
+c'est-à-dire pousse les passages calmes et retient les forts. C'est exactement l'argument
+de qualité avancé plus haut, et c'est la première fois qu'un chiffre le soutient. Bonus
+non anticipé : la passe unique **rate aussi la cible** de 1,6 dB (-17,6 au lieu de -16),
+alors que l'égalité des niveaux est l'objet même de la tranche.
+
+Le test n'est pas complaisant : en lui retirant la mesure préalable — donc en le ramenant
+à une passe —, **trois de ses quatre assertions tombent**, dont celle du mode et celle de
+la dynamique. C'est ce qui le distingue d'un test écrit pour donner raison au choix déjà
+fait.
+
+**Éprouvé sur les deux versions, dont celle de production.** Le poste de développement
+tourne sur ffmpeg 9.0.1, l'image de production sur le **7.1 de Debian trixie** (voir le
+`Dockerfile`), et `loudnorm` n'a aucune obligation de se comporter pareil. Le banc a donc
+été rejoué **dans `node:24-trixie-slim`**, sur `ffmpeg 7.1.5-0+deb13u1` :
+
+|                         | mode 2 passes | mode 1 passe | écart source → 2p → 1p | I sortie 2p |
+| ----------------------- | ------------- | ------------ | ---------------------- | ----------- |
+| ffmpeg 9.0.1 (dev)      | `linear`      | `dynamic`    | 8,1 → 8,1 → 5,7        | -16,1       |
+| **ffmpeg 7.1.5 (prod)** | `linear`      | `dynamic`    | 8,0 → 8,0 → 5,7        | -16,1       |
+
+Les deux versions concordent au dixième de LU, y compris sur la marge de pic (-3,72 dBTP
+de part et d'autre) et sur le plafond de 96 kHz sans `-ar`. La conclusion ne dépend donc
+pas de la version, et les chiffres de cet ADR sont reproductibles sur l'image qui diffuse.
+
+### ⚠️ Mais le gain constant n'est **pas garanti**, et c'est la vraie découverte
+
+`loudnorm` n'accorde son mode `linear` qu'à **deux conditions**, trouvées au banc :
+
+1. **`measured_LRA` ≤ `LRA` cible (11 LU).** Un gain constant ne peut pas réduire une
+   plage : une source qui déborde la cible est traitée en dynamique.
+2. **`measured_TP` + gain ≤ `TP` cible (-1,5 dBTP).** Celle-ci mord bien plus souvent, et
+   elle est contre-intuitive : elle porte sur le **facteur de crête**, pas sur la
+   dynamique. Comme `gain = cible_I − I`, la condition se réduit à
+   `TP − I ≤ 14,5 LU` — une propriété de la source, indépendante de son niveau.
+
+Conséquence opérationnelle, et elle n'est pas mince. Mesuré au banc, sur la même famille
+de sources :
+
+- bruit rose **nu** : facteur de crête ≈ 14,3 LU — **juste sous** la limite. Il passe, mais
+  de peu ;
+- bruit rose nu creusé de blocs faibles de 10 s à 14 dB : plage 14,1 LU, donc condition 1
+  violée → **`dynamic`** ;
+- bruit rose nu creusé de blocs à 8 dB : facteur de crête monté à 15,7 LU, condition 2
+  violée → **`dynamic`**.
+
+C'est un piège en tenaille : creuser la source pour lui donner de la dynamique abaisse sa
+loudness sans toucher son pic, donc **augmente** son facteur de crête — la propriété même
+qui lui ferme le mode linéaire. Il a fallu passer le bruit au **limiteur** pour obtenir à
+la fois une vraie plage et `linear`, et c'est ce que fait la source du test.
+
+Autrement dit : **une partie de la discothèque sera normalisée dynamiquement, donc
+retouchée à l'intérieur, et le double décodage n'y aura servi qu'à mieux viser la cible.**
+
+Ce n'est pas une raison de revenir à une passe — le second décodage garde alors son
+bénéfice de justesse, 1,6 dB mesuré. Mais cela veut dire que le champ
+`radioTrack.loudness.normalization` **n'est pas un ornement** : c'est le seul endroit où
+l'on apprend qu'un titre donné a été comprimé. Un master de musique commercial, écrêté
+avant livraison, tombe du bon côté ; un enregistrement de louange capté en direct et non
+traité, probablement pas.
+
+À surveiller en production, donc, sur un chiffre qui existe déjà : la proportion de
+`normalization: dynamic` dans les pistes radio. Si elle est forte, c'est un limiteur en
+amont de `loudnorm` qu'il faudra discuter, pas le nombre de passes.
 
 Un filet, enfin : si l'analyse ne rend rien d'exploitable — une source silencieuse fait
 imprimer `-inf` —, la passe d'application retombe sur le mode dynamique au lieu d'échouer.
