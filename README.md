@@ -212,6 +212,10 @@ for c in blue green; do sudo docker logs "eenv-stream-worker-$c" 2>&1 | grep 'te
 
 Deux lignes par sermon : la passe de **service**, puis celle de l'**archive**.
 
+> Pour une ingestion par **URL**, la seconde n'a rien à archiver et le dit :
+> `"note": "rien à mesurer"`, sans aucun rapport au temps réel. Une ligne sans chiffres doit se
+> distinguer d'une ligne dont les chiffres se sont perdus.
+
 ```json
 {
   "transcode": "01a0…",
@@ -241,9 +245,23 @@ Trois champs font le travail :
 - **`items`** — le nombre de fichiers envoyés. Un `uploadHls` long avec beaucoup d'`items` dit
   que le coût est **par fichier** ; peu d'`items` dirait l'inverse.
 
-> **Mesuré le 28/09/2026**, sur un sermon d'1 h 47 : `encode` 94,4 %, `uploadHls` 5,2 % pour
-> 3223 fichiers (17 ms l'envoi). Paralléliser l'envoi — le réflexe — aurait gagné moins d'une
-> minute sur dix-huit. C'est cette ligne qui a évité d'optimiser les 5 %.
+- **`encodeFactor`** — le même rapport, mais sur la **seule** étape d'encodage. `realtimeFactor`
+  y mêle l'envoi ; c'est `encodeFactor` qui accuse la sérialisation.
+
+> **Mesuré les 28 et 29/09/2026**, sur deux sermons :
+>
+> |                | audio  | encode          | ×encode | envoi HLS            |
+> | -------------- | ------ | --------------- | ------- | -------------------- |
+> | 1 h 47         | 6438 s | 1006 s (94,4 %) | **6,4** | 55 s · 3223 fichiers |
+> | 1 h 32 (`url`) | 5533 s | 978 s (95,5 %)  | **5,7** | 42 s · 2773 fichiers |
+>
+> Paralléliser l'envoi — le réflexe — aurait gagné moins d'une minute sur dix-huit. C'est cette
+> mesure qui a évité d'optimiser les 5 %.
+>
+> Le second était une **ingestion par URL**, donc **sans archive FLAC** — ni avant ni après son
+> retrait de la passe. Il tourne pourtant au même régime que le premier : le FLAC n'était pas
+> le coût. Ce qui reste, ce sont **six encodages AAC qui se suivent dans un même fil** (trois
+> rendus HLS, trois `.aac`), à ~34× le temps réel chacun.
 
 > Cette mesure existe parce que le service ne mesurait rien et qu'on optimisait de mémoire.
 > Deux des trois soupçons habituels ne s'appliquent même pas ici : il n'y a pas de `-re` dans
