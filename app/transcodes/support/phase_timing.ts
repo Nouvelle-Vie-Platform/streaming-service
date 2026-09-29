@@ -24,6 +24,20 @@ import logger from '@adonisjs/core/services/logger'
  * Elle n'échoue jamais non plus : `performance.now()` ne lève pas, et une mesure
  * n'a **aucun** droit de faire échouer le travail qu'elle observe.
  */
+/**
+ * Un rapport « secondes d'audio par seconde passée », **ou rien**.
+ *
+ * Rien dès que le dénominateur est nul : une étape chronométrée à 0 ms — un
+ * double de test, une étape sautée — donnerait `Infinity`, que JSON sérialise en
+ * `null`. Un champ à `null` dans un journal se lit comme « la mesure a échoué »
+ * et fait chercher une panne là où il n'y avait qu'une division par zéro.
+ */
+function ratio(name: string, audioSeconds: number | null, ms: number): Record<string, number> {
+  if (!audioSeconds || ms <= 0) return {}
+  const value = audioSeconds / (ms / 1000)
+  return Number.isFinite(value) ? { [name]: Number(value.toFixed(1)) } : {}
+}
+
 /** Ce que la ligne porte **en plus** des durées, et qui ne se mesure pas. */
 export interface LogContext {
   /** La durée de l'audio traité, en secondes — le dénominateur du ×temps-réel. */
@@ -126,10 +140,8 @@ export class PhaseTimings {
       ...(context.regime ? { regime: context.regime } : {}),
       ...(measured ? {} : { note: 'rien à mesurer' }),
       ...(audio ? { audioSeconds: Math.round(audio) } : {}),
-      ...(audio ? { realtimeFactor: Number((audio / (total / 1000)).toFixed(1)) } : {}),
-      ...(audio && encoding
-        ? { encodeFactor: Number((audio / (encoding.ms / 1000)).toFixed(1)) }
-        : {}),
+      ...ratio('realtimeFactor', audio, total),
+      ...ratio('encodeFactor', audio, encoding?.ms ?? 0),
       phases: Object.fromEntries(
         this.#phases.map(({ phase, ms, detail }) => [
           phase,

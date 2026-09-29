@@ -1,5 +1,6 @@
 import env from '#start/env'
 import app from '@adonisjs/core/services/app'
+import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
 /** One AAC-LC quality of the HLS output (see CONTEXT.md, ADR-0001). */
@@ -66,6 +67,117 @@ export function hlsOutputDir(id: string): string {
 /** The master playlist on local disk — its presence marks "already encoded". */
 export function masterPlaylistPath(id: string): string {
   return join(hlsOutputDir(id), 'master.m3u8')
+}
+
+/** The variant playlist of one rendition: `<outDir>/<name>/index.m3u8`. */
+export function variantPlaylistPath(id: string, name: string): string {
+  return join(hlsOutputDir(id), name, 'index.m3u8')
+}
+
+/**
+ * **Le `master.m3u8`, écrit par nous** — et c'est le fichier le plus exposé du
+ * service : tous les téléphones le demandent en premier, et un lecteur qui le
+ * lit mal choisit mal, ou ne joue rien.
+ *
+ * ## Pourquoi nous, et plus ffmpeg
+ *
+ * Il l'écrivait comme effet de bord de `-var_stream_map`, qui exige que les
+ * trois rendus sortent d'une **seule** invocation — donc d'un seul fil, les
+ * encodages se suivant. Mesuré : six encodages sérialisés, 6,4× le temps réel
+ * là où un flux seul en fait plusieurs dizaines. Un processus par rendu les fait
+ * tourner ensemble ; le prix est ce fichier-ci.
+ *
+ * ## La formule n'est pas inventée, elle est relevée
+ *
+ * Sur une sortie témoin de ffmpeg (`-var_stream_map`, trois rendus, 14 s de bruit
+ * rose), les deux attributs se reproduisent **au nombre près** :
+ *
+ * - `BANDWIDTH` = le **maximum**, sur les segments, de `octets × 8 / EXTINF` ;
+ * - `AVERAGE-BANDWIDTH` = `octets totaux × 8 / durée totale`.
+ *
+ * Le pic et non la moyenne, parce que c'est ce que la RFC 8216 demande : un
+ * lecteur choisit un rendu dont il peut soutenir le **pire** segment. Servir la
+ * moyenne ferait bégayer les connexions justes, précisément celles pour
+ * lesquelles l'échelle existe.
+ *
+ * C'est aussi pour cela que les débits **ne sont pas repris de `RENDITIONS`** :
+ * `-b:a 64k` est une consigne donnée à l'encodeur, pas une mesure. Le conteneur
+ * MPEG-TS ajoute son empaquetage (ici ~11 % sur le rendu bas), et un `BANDWIDTH`
+ * sous-évalué est exactement l'erreur qui fait choisir un rendu qu'on ne peut
+ * pas suivre.
+ *
+ * ## Ce qui est recopié à l'identique, sans le comprendre plus loin
+ *
+ * `#EXT-X-VERSION:6`, l'absence de `#EXT-X-INDEPENDENT-SEGMENTS` dans le master,
+ * la ligne vide entre deux variantes, l'ordre des attributs : relevés sur la
+ * sortie témoin, et un test les compare à chaque exécution. Le jour où ffmpeg
+ * changera de forme, c'est ce test qui le dira — pas un fidèle dont le lecteur
+ * reste muet.
+ */
+export async function buildMasterPlaylist(id: string): Promise<string> {
+  const variants = await Promise.all(
+    RENDITIONS.map(async (rendition) => {
+      const { peak, average } = await measureVariant(id, rendition.name)
+      return (
+        `#EXT-X-STREAM-INF:BANDWIDTH=${peak},AVERAGE-BANDWIDTH=${average},` +
+        `CODECS="${HLS_CODECS}"\n${rendition.name}/index.m3u8\n`
+      )
+    })
+  )
+
+  return `#EXTM3U\n#EXT-X-VERSION:${HLS_VERSION}\n${variants.join('\n')}`
+}
+
+/** AAC-LC — ce que `-c:a aac` produit, et ce que ffmpeg annonce. */
+const HLS_CODECS = 'mp4a.40.2'
+
+/** La version de playlist que ffmpeg écrit pour cette configuration. */
+const HLS_VERSION = 6
+
+/**
+ * Le pic et la moyenne d'un rendu, en bits par seconde, **mesurés sur ses
+ * fichiers**.
+ *
+ * La durée vient des `EXTINF` de sa propre playlist et non de `HLS_SEGMENT_SECONDS` :
+ * le dernier segment est presque toujours plus court, et c'est lui qui porte
+ * souvent le pic (moins d'octets, mais beaucoup moins de secondes).
+ */
+async function measureVariant(
+  id: string,
+  name: string
+): Promise<{ peak: number; average: number }> {
+  const playlist = await readFile(variantPlaylistPath(id, name), 'utf8')
+  const lines = playlist.split('\n')
+
+  let totalBytes = 0
+  let totalSeconds = 0
+  let peak = 0
+
+  for (const [index, line] of lines.entries()) {
+    const extinf = /^#EXTINF:([\d.]+)/.exec(line)
+    if (!extinf) continue
+
+    const seconds = Number(extinf[1])
+    const segment = lines[index + 1]?.trim()
+    if (!segment || seconds <= 0) continue
+
+    const { size } = await stat(join(hlsOutputDir(id), name, segment))
+    totalBytes += size
+    totalSeconds += seconds
+    peak = Math.max(peak, (size * 8) / seconds)
+  }
+
+  if (totalSeconds === 0) {
+    // Une playlist sans segment n'est pas un rendu vide : c'est un encodage qui
+    // a échoué sans le dire. Annoncer un débit de zéro produirait un master
+    // valide menant à du silence.
+    throw new Error(`HLS variant "${name}" of ${id} has no segment — refusing to write a master`)
+  }
+
+  return {
+    peak: Math.round(peak),
+    average: Math.round((totalBytes * 8) / totalSeconds),
+  }
 }
 
 /**

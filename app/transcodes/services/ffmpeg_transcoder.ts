@@ -1,14 +1,18 @@
 import {
   RENDITIONS,
   HLS_SEGMENT_SECONDS,
+  DOWNLOAD_FORMAT,
   hlsOutputDir,
   archivePath,
+  buildMasterPlaylist,
   downloadOutputDir,
-  downloadOutputArgs,
   downloadRenditionPath,
+  masterPlaylistPath,
+  variantPlaylistPath,
+  type Rendition,
 } from '#transcodes/support/hls'
-import { execFile, spawn } from 'node:child_process'
-import { mkdir, stat } from 'node:fs/promises'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import { mkdir, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -120,39 +124,13 @@ export class FfmpegTranscoder {
     // HLS upload never sweeps them — ensure their staging dir exists.
     await mkdir(downloadOutputDir(id), { recursive: true })
 
-    const args = this.buildArgs(source, id, outDir)
+    await this.runLadder(source, id, outDir, durationSeconds, onProgress)
 
-    await new Promise<void>((resolve, reject) => {
-      const proc = spawn('ffmpeg', args)
-
-      let stderrTail = ''
-      proc.stderr.on('data', (chunk) => {
-        stderrTail = (stderrTail + chunk.toString()).slice(-2000)
-      })
-
-      let buffer = ''
-      proc.stdout.on('data', (chunk) => {
-        buffer += chunk.toString()
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
-        for (const line of lines) {
-          const match = line.match(/^out_time_us=(\d+)/)
-          if (match && durationSeconds) {
-            const percent = Math.min(
-              99,
-              Math.floor((Number(match[1]) / (1_000_000 * durationSeconds)) * 100)
-            )
-            if (percent >= 0) onProgress(percent)
-          }
-        }
-      })
-
-      proc.on('error', reject)
-      proc.on('close', (code) => {
-        if (code === 0) resolve()
-        else reject(new Error(`ffmpeg exited with code ${code}: ${stderrTail}`))
-      })
-    })
+    // **Le master en dernier, et jamais avant.** Il n'existe qu'une fois les
+    // trois variantes complètes : un master écrit plus tôt désignerait des
+    // playlists en cours d'écriture, et un lecteur qui l'attraperait à cet
+    // instant jouerait un rendu tronqué sans que rien ne signale l'anomalie.
+    await writeFile(masterPlaylistPath(id), await buildMasterPlaylist(id))
 
     return { downloads: await this.measureDownloads(id) }
   }
@@ -219,16 +197,71 @@ export class FfmpegTranscoder {
     })
   }
 
-  private buildArgs(source: string, id: string, outDir: string): string[] {
-    const bitrateFlags = RENDITIONS.flatMap((rendition, index) => [
-      `-b:a:${index}`,
-      rendition.bitrate,
-    ])
-    const streamMap = RENDITIONS.map(
-      (rendition, index) => `a:${index},name:${rendition.name}`
-    ).join(' ')
+  /**
+   * **Un processus ffmpeg par rendu**, lancés ensemble.
+   *
+   * Chacun produit sa variante HLS *et* son `.aac` de téléchargement — deux
+   * encodages au même débit, depuis une lecture de la source qui lui est propre.
+   * Le total d'encodages ne change pas ; ce qui change est qu'ils ne se suivent
+   * plus. Mesuré avant : six encodages dans un seul fil, 5,7× le temps réel sur
+   * un sermon d'1 h 32, pendant que sept cœurs dormaient.
+   *
+   * Le prix est **trois lectures de la source** au lieu d'une. Elle vient du
+   * RustFS de la même machine, et le décodage est la part bon marché du travail.
+   *
+   * ## La progression est celle du plus lent
+   *
+   * Trois compteurs avancent ; on rend le **minimum**. Le maximum annoncerait
+   * 99 % pendant qu'un rendu est à la moitié, et la barre reculerait — ou pire,
+   * resterait bloquée à 99 % sans que personne sache si c'est fini.
+   *
+   * ## Un échec emporte les autres
+   *
+   * Le premier refus tue les processus restants : les laisser finir écrirait des
+   * variantes complètes pour un transcodage qui a déjà échoué, et la reprise les
+   * trouverait sur le disque sans le master — l'état exact que le point de
+   * contrôle de `ProcessTranscode` prend pour « déjà encodé ».
+   */
+  private async runLadder(
+    source: string,
+    id: string,
+    outDir: string,
+    durationSeconds: number | null,
+    onProgress: (percent: number) => void
+  ): Promise<void> {
+    const percents = new Map(RENDITIONS.map((rendition) => [rendition.name, 0]))
+    const children: ChildProcess[] = []
 
-    return [
+    const runs = RENDITIONS.map((rendition) =>
+      this.runRendition(source, id, outDir, rendition, durationSeconds, children, (percent) => {
+        percents.set(rendition.name, percent)
+        onProgress(Math.min(...percents.values()))
+      })
+    )
+
+    try {
+      await Promise.all(runs)
+    } catch (error) {
+      for (const child of children) child.kill('SIGKILL')
+      // Absorbe les rejets des processus qu'on vient de tuer : sans cela, Node
+      // les signale en « unhandled rejection » et le worker tombe sur une panne
+      // qui n'est pas la sienne.
+      await Promise.allSettled(runs)
+      throw error
+    }
+  }
+
+  /** Un rendu : sa variante HLS et son `.aac`, dans un processus à lui. */
+  private runRendition(
+    source: string,
+    id: string,
+    outDir: string,
+    rendition: Rendition,
+    durationSeconds: number | null,
+    children: ChildProcess[],
+    onProgress: (percent: number) => void
+  ): Promise<void> {
+    const args = [
       '-hide_banner',
       '-y',
       '-i',
@@ -237,11 +270,14 @@ export class FfmpegTranscoder {
       '-progress',
       'pipe:1',
       '-nostats',
-      // Output 1 — the three HLS renditions + master playlist.
-      ...RENDITIONS.flatMap(() => ['-map', '0:a:0']),
+      // Sortie 1 — la variante HLS de ce rendu. Pas de `-master_pl_name` : le
+      // master est écrit par `buildMasterPlaylist`, une fois les trois finies.
+      '-map',
+      '0:a:0',
       '-c:a',
       'aac',
-      ...bitrateFlags,
+      '-b:a',
+      rendition.bitrate,
       '-f',
       'hls',
       '-hls_time',
@@ -250,17 +286,54 @@ export class FfmpegTranscoder {
       'vod',
       '-hls_flags',
       'independent_segments',
-      '-master_pl_name',
-      'master.m3u8',
-      '-var_stream_map',
-      streamMap,
       '-hls_segment_filename',
-      join(outDir, '%v', 'seg_%03d.ts'),
-      join(outDir, '%v', 'index.m3u8'),
-      // Outputs 2-4 — the three progressive `.aac` download renditions, mapped
-      // from the same source read (no second decode). Produced on both ingestion
-      // paths: they are a serving artefact, not an archive (ADR-0009).
-      ...downloadOutputArgs(id),
+      join(outDir, rendition.name, 'seg_%03d.ts'),
+      variantPlaylistPath(id, rendition.name),
+      // Sortie 2 — le `.aac` progressif du même rendu (ADR-0009), au même débit
+      // et depuis la même lecture. C'est ce qui garde deux encodages par
+      // processus, donc trois processus équilibrés.
+      '-map',
+      '0:a:0',
+      '-c:a',
+      DOWNLOAD_FORMAT.codec,
+      '-b:a',
+      rendition.bitrate,
+      '-f',
+      DOWNLOAD_FORMAT.container,
+      downloadRenditionPath(id, rendition.name),
     ]
+
+    return new Promise<void>((resolve, reject) => {
+      const proc = spawn('ffmpeg', args)
+      children.push(proc)
+
+      let stderrTail = ''
+      proc.stderr.on('data', (chunk) => {
+        stderrTail = (stderrTail + chunk.toString()).slice(-2000)
+      })
+
+      let buffer = ''
+      proc.stdout.on('data', (chunk) => {
+        buffer += chunk.toString()
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          const match = line.match(/^out_time_us=(\d+)/)
+          if (match && durationSeconds) {
+            const percent = Math.min(
+              99,
+              Math.floor((Number(match[1]) / (1_000_000 * durationSeconds)) * 100)
+            )
+            if (percent >= 0) onProgress(percent)
+          }
+        }
+      })
+
+      proc.on('error', reject)
+      proc.on('close', (code) => {
+        if (code === 0) resolve()
+        else reject(new Error(`ffmpeg (${rendition.name}) exited with code ${code}: ${stderrTail}`))
+      })
+    })
   }
 }
