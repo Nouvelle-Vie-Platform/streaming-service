@@ -169,11 +169,15 @@ export class ProcessTranscode {
     timings.log(params.id, {
       // **Ce qui rend la ligne lisible sans arithmétique.** Sans la durée de
       // l'audio, « encode : 1006 s » ne dit pas si c'est rapide ou lent ; avec
-      // elle, le rapport au temps réel saute aux yeux. Et sans le régime, on ne
-      // sait pas si ffmpeg a aussi **téléchargé** la source pendant l'encodage —
-      // ce qui expliquerait tout autre chose.
+      // elle, le rapport au temps réel saute aux yeux.
+      //
+      // ⚠️ `regime` dit **par où ffmpeg a lu**, pas comment l'enseignement a été
+      // déposé : un fichier téléversé au portail arrive ici en `url`, parce que
+      // le portail le range dans RustFS et nous en remet une URL présignée. Voir
+      // `LogContext.regime` — la confusion a déjà fait chercher une mesure qui ne
+      // peut pas exister.
       audioSeconds: transcode.durationSeconds,
-      regime: params.remote ? 'url' : 'depot',
+      regime: params.remote ? 'url' : 'fichier',
     })
 
     // The download renditions are now on the public origin: hand the caller (#186)

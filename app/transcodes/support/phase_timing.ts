@@ -29,16 +29,25 @@ export interface LogContext {
   /** La durée de l'audio traité, en secondes — le dénominateur du ×temps-réel. */
   audioSeconds?: number | null
   /**
-   * `depot` (fichier local) ou `url` (ffmpeg lit la source à distance).
+   * **Par où ffmpeg a lu la source** — et non pas comment l'enseignement a été
+   * déposé. Les deux se confondent facilement, et la confusion coûte cher.
    *
-   * Sans lui, un `encode` long est ambigu : c'est peut-être le CPU, mais c'est
-   * peut-être le **téléchargement de la source**, qui se fait pendant l'encodage
-   * sur le chemin URL. Deux causes, deux remèdes opposés.
+   * ⚠️ **Un administrateur qui téléverse un fichier produit `url`.** Le portail
+   * envoie le média vers RustFS, puis remet au service une **URL présignée**
+   * (`StartMediaTranscode.presignRead`) : la seule route d'ingestion qu'il
+   * appelle est `POST /transcodes`. `fichier` désigne `POST /upload`, que ce
+   * service expose et que **cette plateforme n'utilise jamais**.
+   *
+   * La distinction reste journalisée parce qu'elle décide du reste : sur le
+   * chemin `url`, ffmpeg lit la source **pendant** l'encodage (ici depuis le
+   * RustFS de la même machine), et aucune archive FLAC n'est produite — le
+   * master téléversé *est* l'archive, et la médiathèque ne le purge jamais
+   * (ADR-0033 côté portail).
    *
    * `archive` est la seconde passe, celle du FLAC : elle porte le même
    * identifiant de transcodage et sortirait sinon comme un doublon inexplicable.
    */
-  regime?: 'depot' | 'url' | 'archive'
+  regime?: 'fichier' | 'url' | 'archive'
 }
 
 export class PhaseTimings {
