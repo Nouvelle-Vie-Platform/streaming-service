@@ -24,6 +24,20 @@ import logger from '@adonisjs/core/services/logger'
  * Elle n'échoue jamais non plus : `performance.now()` ne lève pas, et une mesure
  * n'a **aucun** droit de faire échouer le travail qu'elle observe.
  */
+/**
+ * Un rapport « secondes d'audio par seconde passée », **ou rien**.
+ *
+ * Rien dès que le dénominateur est nul : une étape chronométrée à 0 ms — un
+ * double de test, une étape sautée — donnerait `Infinity`, que JSON sérialise en
+ * `null`. Un champ à `null` dans un journal se lit comme « la mesure a échoué »
+ * et fait chercher une panne là où il n'y avait qu'une division par zéro.
+ */
+function ratio(name: string, audioSeconds: number | null, ms: number): Record<string, number> {
+  if (!audioSeconds || ms <= 0) return {}
+  const value = audioSeconds / (ms / 1000)
+  return Number.isFinite(value) ? { [name]: Number(value.toFixed(1)) } : {}
+}
+
 /** Ce que la ligne porte **en plus** des durées, et qui ne se mesure pas. */
 export interface LogContext {
   /** La durée de l'audio traité, en secondes — le dénominateur du ×temps-réel. */
@@ -52,7 +66,7 @@ export interface LogContext {
 
 export class PhaseTimings {
   readonly #started = performance.now()
-  readonly #phases: { phase: string; ms: number; detail?: number }[] = []
+  readonly #phases: { phase: string; ms: number; items?: number; bytes?: number }[] = []
 
   /**
    * Exécute [run] en retenant sa durée sous le nom [phase].
@@ -77,9 +91,25 @@ export class PhaseTimings {
    */
   async count(phase: string, run: () => Promise<number>): Promise<number> {
     const at = performance.now()
-    const detail = await run()
-    this.#phases.push({ phase, ms: Math.round(performance.now() - at), detail })
-    return detail
+    const items = await run()
+    this.#phases.push({ phase, ms: Math.round(performance.now() - at), items })
+    return items
+  }
+
+  /**
+   * Comme [time], en retenant en plus **combien d'octets** l'étape a déplacés.
+   *
+   * Séparé de [count] parce que les deux se lisent autrement : « 3604 items »
+   * désigne des fichiers, et afficher deux milliards d'octets sous le même nom
+   * ferait lire deux milliards de fichiers. Le débit se déduit alors de la
+   * paire — c'est lui qui dit si un transfert lent est une source énorme ou un
+   * lien étroit.
+   */
+  async bytes(phase: string, run: () => Promise<number>): Promise<number> {
+    const at = performance.now()
+    const bytes = await run()
+    this.#phases.push({ phase, ms: Math.round(performance.now() - at), bytes })
+    return bytes
   }
 
   /**
@@ -126,14 +156,19 @@ export class PhaseTimings {
       ...(context.regime ? { regime: context.regime } : {}),
       ...(measured ? {} : { note: 'rien à mesurer' }),
       ...(audio ? { audioSeconds: Math.round(audio) } : {}),
-      ...(audio ? { realtimeFactor: Number((audio / (total / 1000)).toFixed(1)) } : {}),
-      ...(audio && encoding
-        ? { encodeFactor: Number((audio / (encoding.ms / 1000)).toFixed(1)) }
-        : {}),
+      ...ratio('realtimeFactor', audio, total),
+      ...ratio('encodeFactor', audio, encoding?.ms ?? 0),
       phases: Object.fromEntries(
-        this.#phases.map(({ phase, ms, detail }) => [
+        this.#phases.map(({ phase, ms, items, bytes }) => [
           phase,
-          detail === undefined ? ms : { ms, items: detail },
+          items !== undefined
+            ? { ms, items }
+            : bytes !== undefined
+              ? // Le débit avec les octets : sans lui, « 800 s » ne dit pas si
+                // la source était énorme ou le lien étroit — et les deux ne se
+                // corrigent pas du tout de la même façon.
+                { ms, bytes, mbps: ms > 0 ? Number(((bytes * 8) / (ms * 1000)).toFixed(1)) : null }
+              : ms,
         ])
       ),
     }

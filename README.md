@@ -249,8 +249,10 @@ Trois champs font le travail :
 - **`items`** — le nombre de fichiers envoyés. Un `uploadHls` long avec beaucoup d'`items` dit
   que le coût est **par fichier** ; peu d'`items` dirait l'inverse.
 
-- **`encodeFactor`** — le même rapport, mais sur la **seule** étape d'encodage. `realtimeFactor`
-  y mêle l'envoi ; c'est `encodeFactor` qui accuse la sérialisation.
+- **`encodeFactor`** — le même rapport, mais sur la **seule** étape d'encodage.
+- **`download`** — le **rapatriement de la source**, chronométré à part depuis que la copie
+  locale existe, avec ses octets et son débit. C'est l'étape que ffmpeg confondait avec
+  l'encodage : il lit une URL _pendant_ qu'il encode, et les deux durées n'en faisaient qu'une.
 
 > **Mesuré les 28 et 29/09/2026**, sur deux sermons :
 >

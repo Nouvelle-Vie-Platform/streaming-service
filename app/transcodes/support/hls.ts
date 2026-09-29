@@ -69,6 +69,21 @@ export function masterPlaylistPath(id: string): string {
 }
 
 /**
+ * La copie locale d'une source **distante**, le temps de l'encoder.
+ *
+ * Hors du dossier HLS et hors de celui des téléchargements, comme l'archive :
+ * ces deux-là sont poussés en entier vers RustFS, et la source n'a rien à y
+ * faire. Elle porte l'identifiant du transcodage, donc deux jobs simultanés ne
+ * se marchent pas dessus.
+ *
+ * `.bin` sans plus de précision : ffmpeg reconnaît le conteneur à ses octets, et
+ * une extension devinée depuis une URL présignée serait un mensonge poli.
+ */
+export function stagedSourcePath(id: string): string {
+  return app.makePath('storage/sources', `${id}.bin`)
+}
+
+/**
  * The lossless audio archive (FLAC) on local disk, pushed to RustFS in jalon G.
  * Kept **outside** the HLS output dir so it is never swept into the HLS upload
  * — the archive is conservation, not diffusion.
