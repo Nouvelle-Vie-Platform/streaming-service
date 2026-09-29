@@ -71,6 +71,36 @@ export interface EncodeResult {
  * personne ne compte les secondes.
  */
 export class FfmpegTranscoder {
+  /** Mémorisé : la version ne change pas pendant la vie du processus. */
+  #version: string | null | undefined
+
+  /**
+   * La version de ffmpeg, telle qu'il l'annonce — ou `null` s'il ne répond pas.
+   *
+   * Elle voyage dans la ligne de mesure parce qu'elle **explique** le chiffre qui
+   * l'accompagne : cette passe écrit six sorties, et c'est ffmpeg 7.0 qui a
+   * commencé à les encoder en parallèle, un fil par sortie. Sous 5.1 elles se
+   * suivaient — 6,1× le temps réel contre 54,8× pour un encodage seul sur la
+   * même machine.
+   *
+   * Sans ce champ, une image reconstruite un jour sur une base plus ancienne
+   * diviserait la vitesse par quatre **en silence** : rien ne casse, les sermons
+   * sortent, ils sortent simplement quatre fois plus tard.
+   */
+  async version(): Promise<string | null> {
+    if (this.#version !== undefined) return this.#version
+
+    try {
+      const { stdout } = await execFileAsync('ffmpeg', ['-version'])
+      this.#version = /^ffmpeg version (\S+)/.exec(stdout)?.[1] ?? null
+    } catch {
+      // Une mesure n'a pas à faire échouer le travail qu'elle observe.
+      this.#version = null
+    }
+
+    return this.#version
+  }
+
   async probe(sourcePath: string): Promise<ProbeResult> {
     const { stdout } = await execFileAsync('ffprobe', [
       '-v',
