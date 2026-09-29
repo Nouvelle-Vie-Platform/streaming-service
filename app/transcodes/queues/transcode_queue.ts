@@ -1,4 +1,4 @@
-import type { SourceKind } from '#transcodes/support/transcode_enums'
+import type { SourceKind, TranscodeProfile } from '#transcodes/support/transcode_enums'
 import { queueConnection } from '#config/queue'
 import { withdrawJob } from '#transcodes/support/withdraw_job'
 import { Queue } from 'bullmq'
@@ -17,6 +17,16 @@ export interface TranscodeJobData {
   source: string
   sourceKind: SourceKind
   remote: boolean
+  /**
+   * Le profil demandé (issue #46) — ce qu'il faut fabriquer.
+   *
+   * **Facultatif exprès.** Un job déjà en file au moment d'une bascule
+   * blue/green a été écrit par la version précédente et ne porte pas ce champ ;
+   * le worker doit le traiter comme un enseignement, pas planter dessus. Le
+   * défaut est donc relu à la lecture (`DEFAULT_PROFILE`), et la ligne en base
+   * porte de son côté le même défaut, posé par Postgres.
+   */
+  profile?: TranscodeProfile
 }
 
 /**

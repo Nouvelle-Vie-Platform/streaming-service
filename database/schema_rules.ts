@@ -35,6 +35,24 @@ const downloadsColumn = {
   decorators: [{ name: '@column' }],
 }
 
+// Le profil d'ingestion (issue #46). Comme `status` et `source_kind` : refermé
+// sur son union, pour que le compilateur refuse un profil inventé plutôt que de
+// le laisser filer jusqu'à un `switch` silencieux.
+const profileColumn = {
+  tsType: 'TranscodeProfile',
+  imports: [{ source: '#transcodes/support/transcode_enums', typeImports: ['TranscodeProfile'] }],
+  decorators: [{ name: '@column' }],
+}
+
+// La piste radio (issue #46), même discipline que `downloads` : un jsonb nu
+// serait typé `any`, on le referme sur `RadioTrackInfo`. `prepare`/`consume`
+// sont posés dans le modèle — ils ne s'expriment pas ici.
+const radioTrackColumn = {
+  tsType: 'RadioTrackInfo',
+  imports: [{ source: '#transcodes/support/hls', typeImports: ['RadioTrackInfo'] }],
+  decorators: [{ name: '@column' }],
+}
+
 export default {
   tables: {
     transcodes: {
@@ -43,6 +61,8 @@ export default {
         source_kind: sourceKindColumn,
         callback_secret: callbackSecretColumn,
         downloads: downloadsColumn,
+        profile: profileColumn,
+        radio_track: radioTrackColumn,
       },
     },
   },

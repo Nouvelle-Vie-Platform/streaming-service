@@ -1,3 +1,4 @@
+import type { TranscodeProfile } from '#transcodes/support/transcode_enums'
 import logger from '@adonisjs/core/services/logger'
 
 /**
@@ -71,6 +72,17 @@ export interface LogContext {
    * vitesse par quatre sans rien casser — donc sans rien signaler.
    */
   ffmpeg?: string | null
+  /**
+   * Le profil de sortie, **quand ce n'est pas le régime historique** (issue #46).
+   *
+   * Absent pour un enseignement : la ligne citée dans le README doit rester
+   * lisible telle quelle. Présent pour une radio, parce que les facteurs de la
+   * même ligne n'y veulent alors plus rien dire par comparaison — une seule
+   * sortie au lieu de six, et deux décodages au lieu d'un. Sans ce champ, un
+   * `×encode` soudain quatre fois meilleur ressemblerait à une amélioration de la
+   * machine.
+   */
+  profile?: TranscodeProfile
 }
 
 export class PhaseTimings {
@@ -164,6 +176,7 @@ export class PhaseTimings {
       totalMs: total,
       ...(context.regime ? { regime: context.regime } : {}),
       ...(context.ffmpeg ? { ffmpeg: context.ffmpeg } : {}),
+      ...(context.profile ? { profile: context.profile } : {}),
       ...(measured ? {} : { note: 'rien à mesurer' }),
       ...(audio ? { audioSeconds: Math.round(audio) } : {}),
       ...ratio('realtimeFactor', audio, total),

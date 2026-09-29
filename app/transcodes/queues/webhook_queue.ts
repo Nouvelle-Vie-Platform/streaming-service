@@ -1,5 +1,5 @@
 import type { TranscodeStatus } from '#transcodes/support/transcode_enums'
-import type { DownloadRenditionInfo } from '#transcodes/support/hls'
+import type { DownloadRenditionInfo, RadioTrackInfo } from '#transcodes/support/hls'
 import { queueConnection } from '#config/queue'
 import { Queue } from 'bullmq'
 
@@ -23,6 +23,19 @@ export interface WebhookPayload {
   durationSeconds: number | null
   /** The progressive download renditions (URL + byte size); empty on FAILED. */
   downloads: DownloadRenditionInfo[]
+  /**
+   * La piste radio (issue #46) : l'URL unique, sa taille, le **niveau mesuré** et
+   * les **étiquettes** de la source.
+   *
+   * ⚠️ **Absent, et non `null`, hors du profil `radio`.** La charge utile d'un
+   * enseignement doit rester exactement celle que l'appelant reçoit aujourd'hui :
+   * un champ de plus, même vide, serait un changement de contrat pour un
+   * consommateur qui n'a rien demandé. Sur ce profil, `outputPlaylist` vaut
+   * `null` et `downloads` est vide — il n'y a ni playlist ni échelle, et le dire
+   * en creux est plus honnête que de ranger un fichier `.m4a` dans un champ qui
+   * s'appelle « playlist ».
+   */
+  radioTrack?: RadioTrackInfo
 }
 
 /**
