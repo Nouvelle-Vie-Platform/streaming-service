@@ -288,8 +288,10 @@ export interface LoudnessMeasurement {
  * Les champs `output*` ne sont pas une prédiction : `loudnorm` les calcule sur
  * le résultat, pendant la passe qui l'écrit. Personne ne redécode pour les
  * obtenir.
+ *
+ * `type` et non `interface` : voir {@link RadioTrackInfo}, qui l'imbrique.
  */
-export interface RadioLoudness {
+export type RadioLoudness = {
   /** La cible visée (LUFS) — `RADIO_LOUDNESS.targetI` au moment de l'encodage. */
   targetI: number
   /** Loudness intégrée de la **source** (LUFS). */
@@ -324,8 +326,17 @@ export interface RadioLoudness {
  * Un seul objet, comme `downloads` : ce qui est toujours écrit et lu ensemble
  * n'a pas besoin de quatre colonnes, et la forme épouse la charge utile du
  * webhook au champ près.
+ *
+ * ⚠️ **`type` et non `interface`, pour tout ce bloc et ses imbriqués.** Cet objet
+ * part dans `TranscodeWirePayload`, que Transmit exige assignable à son
+ * `Broadcastable` — donc indexable par `string`. TypeScript n'accorde cette
+ * signature d'index implicite qu'aux **alias** : il ne suffit pas que le payload
+ * en soit un, chaque type de valeur qu'il porte doit l'être aussi. Une
+ * `interface` ici — ou sur {@link RadioLoudness}, ou sur `MediaTags` — casse
+ * `npm run typecheck` dans `TranscodePublisher`, et le message accuse le payload
+ * plutôt que le champ fautif.
  */
-export interface RadioTrackInfo {
+export type RadioTrackInfo = {
   /** L'URL absolue, non signée et permanente sur l'origine publique. */
   url: string
   /** La taille du fichier en octets, mesurée localement (aucun `HEAD`). */

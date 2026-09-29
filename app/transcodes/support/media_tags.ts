@@ -7,8 +7,15 @@
  * au dépôt, « s'ils sont disponibles et que l'utilisateur les connaît » — donc
  * une absence est normale, jamais une erreur, et chaque champ est nullable
  * séparément (un fichier peut porter un titre sans album).
+ *
+ * ⚠️ **Un `type` et non une `interface`, et ce n'est pas un goût.** Ces
+ * étiquettes voyagent dans `TranscodeWirePayload`, que Transmit exige assignable
+ * à son `Broadcastable` — donc indexable par `string`. TypeScript n'accorde cette
+ * signature d'index implicite qu'aux **alias**, jamais aux interfaces : reconvertir
+ * ce bloc en `interface` casse `npm run typecheck` sur la diffusion SSE, à deux
+ * fichiers d'ici.
  */
-export interface MediaTags {
+export type MediaTags = {
   title: string | null
   artist: string | null
   album: string | null
