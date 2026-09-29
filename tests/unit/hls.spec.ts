@@ -1,4 +1,5 @@
 import { test } from '@japa/runner'
+import { readFile } from 'node:fs/promises'
 import {
   DOWNLOAD_FORMAT,
   RENDITIONS,
@@ -96,5 +97,34 @@ test.group('download renditions (ADR-0009)', () => {
     assert.equal(DOWNLOAD_FORMAT.container, 'adts')
     assert.equal(DOWNLOAD_FORMAT.extension, 'aac')
     assert.equal(DOWNLOAD_FORMAT.contentType, 'audio/aac')
+  })
+})
+
+/**
+ * **La version de ffmpeg est une dépendance de performance, pas de compilation.**
+ *
+ * La passe écrit six sorties, et c'est ffmpeg 7.0 qui a commencé à les encoder
+ * en parallèle, un fil par sortie. Sous 5.1 elles se suivaient : 6,1× le temps
+ * réel contre 54,8× pour un encodage seul sur la même machine.
+ *
+ * Une image reconstruite un jour sur une base plus ancienne ne casserait rien —
+ * les sermons sortiraient, quatre fois plus tard. C'est exactement le genre de
+ * régression qu'aucun test d'unité n'attrape, d'où ce garde-fou sur l'image
+ * elle-même.
+ */
+test.group('L’image de production', () => {
+  test('part d’une base qui livre ffmpeg 7 ou plus', async ({ assert }) => {
+    const dockerfile = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8')
+    const base = /^FROM (node:\S+) AS base$/m.exec(dockerfile)?.[1]
+
+    assert.exists(base, 'la couche de base a changé de forme')
+    // `bookworm` livre ffmpeg 5.1, `trixie` livre 7.1. La liste est explicite
+    // plutôt que déduite : une base inconnue doit faire rougir ce test et
+    // obliger à vérifier sa version, pas passer par défaut.
+    assert.include(
+      ['node:24-trixie-slim'],
+      base!,
+      `base "${base}" : vérifier qu'elle livre ffmpeg >= 7 avant de l'autoriser ici`
+    )
   })
 })

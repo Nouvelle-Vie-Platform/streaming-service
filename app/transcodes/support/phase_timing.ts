@@ -62,6 +62,15 @@ export interface LogContext {
    * identifiant de transcodage et sortirait sinon comme un doublon inexplicable.
    */
   regime?: 'fichier' | 'url' | 'archive'
+  /**
+   * La version de ffmpeg qui a fait le travail.
+   *
+   * Elle est là pour **expliquer** les facteurs de la même ligne : la passe
+   * écrit six sorties, et c'est ffmpeg 7.0 qui a commencé à les encoder en
+   * parallèle. Une image reconstruite sur une base plus ancienne diviserait la
+   * vitesse par quatre sans rien casser — donc sans rien signaler.
+   */
+  ffmpeg?: string | null
 }
 
 export class PhaseTimings {
@@ -154,6 +163,7 @@ export class PhaseTimings {
       transcode: id,
       totalMs: total,
       ...(context.regime ? { regime: context.regime } : {}),
+      ...(context.ffmpeg ? { ffmpeg: context.ffmpeg } : {}),
       ...(measured ? {} : { note: 'rien à mesurer' }),
       ...(audio ? { audioSeconds: Math.round(audio) } : {}),
       ...ratio('realtimeFactor', audio, total),

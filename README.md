@@ -291,6 +291,10 @@ cache dans Redis pour un court TTL. `/upload`, `/transcodes/*` et le canal SSE s
 ## Prérequis
 
 - **Node 24**, **ffmpeg/ffprobe** (build complet).
+  > **ffmpeg ≥ 7 en production.** Sa passe écrit six sorties (trois rendus HLS, trois `.aac`) et
+  > c'est la version 7.0 qui les encode **en parallèle**, un fil par sortie. Sous ffmpeg 5, elles
+  > se suivaient : mesuré, 6,1× le temps réel contre 55× pour un encodage seul sur la **même**
+  > machine. L'image part donc de `node:24-trixie-slim` (ffmpeg 7.1) et non de `bookworm` (5.1).
 - **PostgreSQL**, **Redis**, **RustFS** (ou tout S3-compatible).
 - Un **endpoint de vérification de jeton** joignable (`AUTH_VERIFY_URL`).
 

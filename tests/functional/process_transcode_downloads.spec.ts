@@ -28,6 +28,10 @@ function stubTranscoder() {
       probe: async () => ({ hasAudio: true, durationSeconds: DURATION }),
       encode: async () => ({ downloads }),
       measureDownloads: async () => downloads,
+      // La ligne de mesure porte la version de ffmpeg — c'est elle qui
+      // explique les facteurs qui l'accompagnent. Un double qui l'omettrait
+      // ferait échouer l'action sur un champ de journal, ce qui est arrivé.
+      version: async () => '7.1.5-test',
     } as unknown as FfmpegTranscoder
   })
 }

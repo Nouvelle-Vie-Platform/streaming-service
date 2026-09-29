@@ -212,6 +212,7 @@ export class ProcessTranscode {
       // peut pas exister.
       audioSeconds: transcode.durationSeconds,
       regime: params.remote ? 'url' : 'fichier',
+      ffmpeg: await this.transcoder.version(),
     })
 
     // The download renditions are now on the public origin: hand the caller (#186)
