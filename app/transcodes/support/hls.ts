@@ -368,6 +368,19 @@ export type RadioTrackInfo = {
   /** La taille du fichier en octets, mesurée localement (aucun `HEAD`). */
   bytes: number
   /**
+   * La durée exacte du média, ou `null` si la sonde n'a rien rendu d'exploitable.
+   *
+   * ⚠️ **Elle voyage ICI, et pas seulement au premier niveau du webhook**, pour
+   * la même raison qu'un enseignement porte la sienne dans `download.duration` :
+   * **le sondage de statut est le chemin de rattrapage d'un webhook perdu**. Une
+   * durée qui n'existerait que dans le webhook serait définitivement perdue si
+   * celui-ci n'arrive pas — la réécriture idempotente du portail ne la republie
+   * pas —, et l'antenne ne peut pas programmer un morceau dont elle ignore la
+   * durée. Le premier niveau du webhook la garde par symétrie avec l'existant ;
+   * c'est cette copie-ci qui rend le rattrapage complet.
+   */
+  durationSeconds: number | null
+  /**
    * Le niveau mesuré — entrée et sortie —, ou `null` si `loudnorm` n'a rien
    * imprimé d'exploitable. Nul plutôt qu'approché : un chiffre de niveau qu'on
    * n'a pas mesuré se recopierait dans un tableau de bord et s'y défendrait.

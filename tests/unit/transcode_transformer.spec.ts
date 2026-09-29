@@ -12,6 +12,7 @@ function transcode(fields: Record<string, unknown>): Transcode {
 const RADIO_TRACK: RadioTrackInfo = {
   url: 'https://media.example.com/radio/01a1/track.m4a',
   bytes: 2_996_000,
+  durationSeconds: 187,
   loudness: {
     targetI: -16,
     inputI: -27.5,

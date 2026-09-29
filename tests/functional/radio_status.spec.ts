@@ -28,6 +28,7 @@ function radioTrack(id: string): RadioTrackInfo {
   return {
     url: radioTrackUrl(id),
     bytes: 2_996_000,
+    durationSeconds: 187,
     loudness: {
       targetI: -16,
       inputI: -27.5,
@@ -96,6 +97,17 @@ test.group('GET /transcodes/:id/status — profil radio (ADR-0010)', (group) => 
 
     // Non signée : une URL qui expire en pleine diffusion ferait taire l'antenne.
     assert.notInclude(response.body().data.radioTrack.url, '?')
+
+    /*
+     * **La durée est là, et c'est le point de ce test.** Le sondage de statut est
+     * le chemin de rattrapage d'un webhook perdu : une durée qui n'existerait
+     * qu'au premier niveau du webhook serait définitivement perdue si celui-ci
+     * n'arrive pas, puisque la réécriture idempotente du portail ne la republie
+     * pas — et l'antenne ne programme pas un morceau dont elle ignore la durée.
+     * C'est la même raison qui fait voyager celle d'un enseignement dans
+     * `download.duration`.
+     */
+    assert.equal(response.body().data.radioTrack.durationSeconds, 187)
   })
 
   test('un enseignement terminé sert la même forme qu’avant, sans champ de plus', async ({
