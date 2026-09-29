@@ -66,6 +66,25 @@ pas seulement une archive). La copie locale n'est qu'un **staging transitoire** 
 supprimée une fois le HLS poussé dans RustFS, pour que le disque applicatif reste borné.
 _Avoid_: Stream, Rendus, Playlist (seul)
 
+**Profil (de sortie)**:
+Ce que l'appelant demande qu'on **fabrique**, choisi au dépôt (`POST /transcodes`) et
+immuable ensuite. `teaching` (le défaut, porté par la base) est le régime historique :
+HLS output à 3 rendus, 3 Rendus progressifs, Archive audio sur le chemin par upload.
+`radio` produit une seule **Piste radio** — ni HLS, ni rendus progressifs, ni archive.
+Le profil décide de **ce qui est encodé et publié**, jamais du cycle de vie : mêmes
+états, même progression, même point de reprise, même webhook, même Reprise (ADR-0010).
+_Avoid_: Mode, Type, Preset, Régime (réservé au chemin d'ingestion dans les journaux)
+
+**Piste radio**:
+La sortie unique du Profil `radio` : un fichier **AAC-LC 128 kbps, 48 kHz, normalisé en
+niveau** (`loudnorm` en deux passes — mesurer, puis appliquer un gain constant), poussé
+sous `radio/<id>/track.m4a` et servi depuis RustFS par une URL **non signée et
+permanente**. Un master de diffusion, pas un flux d'écoute : liquidsoap le lit d'un bout
+à l'autre et ré-encode ce qu'il diffuse. MP4 et non ADTS parce que l'antenne a besoin de
+la **durée exacte** portée par le conteneur, pour ses fondus et ses coupures. Le niveau
+homogène est l'objet de ce profil : sans lui, chaque enchaînement s'entend.
+_Avoid_: Titre, Morceau, Rendu radio, Flux
+
 **Canal temps réel (SSE)**:
 Le flux Server-Sent-Events sur lequel un client suit un Transcode en direct, un canal
 par ressource nommé `transcodes/<id>` (séparateur `/`, calé sur la route). On y pousse
@@ -92,7 +111,8 @@ _Avoid_: Guard, Login, Session, Token verifier (seul)
 
 **RustFS**:
 Le magasin d'objets S3-compatible qui joue **deux rôles** : origine de diffusion du
-HLS output (servi via Caddy) **et** dépôt de l'Archive audio (FLAC). Ni la Source ni le
+HLS output, des Rendus progressifs et de la Piste radio (servis via Caddy) **et** dépôt
+de l'Archive audio (FLAC). Ni la Source ni le
 HLS ne s'accumulent sur le disque applicatif — tout ce qui est durable vit dans RustFS.
 Rien n'y expire tout seul : ce qui y entre n'en sort que par une Reprise (ADR-0008).
 _Avoid_: S3, Bucket, Storage (seul)

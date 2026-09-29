@@ -88,6 +88,40 @@ Réponse `202` :
 `422` si le fichier est invalide (extension/taille). La validation média réelle (présence
 d'une piste audio) est **asynchrone** : un fichier sans audio est accepté puis passe `FAILED`.
 
+### `POST /transcodes`
+
+Ingestion par **URL** — le seul chemin que la plateforme emprunte : le portail range le
+média dans RustFS puis nous remet une URL présignée. `application/json` :
+
+| Champ            | Requis | Description                                                               |
+| ---------------- | ------ | ------------------------------------------------------------------------- |
+| `sourceUrl`      | ✅     | URL complète et lisible **pendant tout l'encodage** (ADR-0007).           |
+| `profile`        | —      | `teaching` (défaut) ou `radio` — voir ci-dessous.                         |
+| `callbackUrl`    | —      | URL notifiée à la finalisation (webhook).                                 |
+| `callbackSecret` | —      | Secret HMAC pour signer le webhook.                                       |
+
+Même réponse `202` que l'upload, même cycle de vie, mêmes notifications. Aucune copie
+locale durable, aucune archive FLAC : le master reste l'objet de l'appelant (ADR-0007).
+
+#### Le profil `radio` (ADR-0010)
+
+Un morceau de musique n'a pas les besoins d'un sermon. Ce profil produit **une seule
+sortie** — un AAC-LC **128 kbps, 48 kHz, normalisé en niveau** (`loudnorm` en deux
+passes) — et rien d'autre :
+
+```text
+radio/<id>/track.m4a      ← la piste, non signée et permanente
+```
+
+Ni jeu HLS (segmenter une chanson de trois minutes n'apporte rien), ni rendus
+progressifs, ni archive FLAC. `outputPlaylist` reste donc `null` : il n'y a pas de
+playlist. C'est le **webhook** qui porte la sortie, dans un champ `radioTrack` — l'URL
+unique, la taille, le **niveau mesuré** et les **étiquettes** lues sur la source.
+
+Sans niveau homogène, chaque enchaînement s'entend et l'auditeur corrige son volume à
+chaque titre ; c'est pourquoi la normalisation est faite **à l'ingestion**, une fois par
+titre, et non depuis la grille.
+
 ### `GET /transcodes/:id/status`
 
 Récupération ponctuelle. `200` avec le **contrat unifié** ci-dessous, `404`
@@ -144,6 +178,31 @@ Le **webhook** part de cette forme et l'**enrichit** (ADR-0009) : il ajoute la d
 et, par rendu, l'URL de téléchargement `.aac` et sa taille en octets — que le consommateur
 persiste et sert sans faire de `HEAD`. `downloads` est peuplé à `COMPLETED`, vide à `FAILED`.
 
+Sur le profil **`radio`** (ADR-0010), la charge utile porte à la place un champ
+`radioTrack` — et **seulement** sur ce profil : la charge d'un enseignement reste au champ
+près celle d'aujourd'hui.
+
+```json
+{
+  "id": "01a1…",
+  "status": "COMPLETED",
+  "progress": 100,
+  "outputPlaylist": null,
+  "error": null,
+  "durationSeconds": 187.25,
+  "downloads": [],
+  "radioTrack": {
+    "url": "https://media.example.com/radio/01a1…/track.m4a",
+    "bytes": 2996000,
+    "loudness": { "targetI": -16, "inputI": -27.5, "outputI": -16.02, "normalization": "linear" },
+    "tags": { "title": "…", "artist": "…", "album": "…" }
+  }
+}
+```
+
+`loudness` peut valoir `null` : un chiffre de niveau qu'on n'a pas mesuré se recopierait
+dans un tableau de bord et s'y défendrait.
+
 ```json
 {
   "id": "0191…",
@@ -187,6 +246,9 @@ PENDING ──▶ PROCESSING ──▶ COMPLETED     (master.m3u8 + segments ser
 
 Les qualités HLS produites : **3 rendus AAC-LC** — `low` 64 kbps, `mid` 128 kbps,
 `high` 192 kbps — plus un `master.m3u8`. Une **archive FLAC** sans perte est conservée dans RustFS.
+
+> Tout ce paragraphe décrit le profil **`teaching`**, le défaut. Le profil `radio` n'a
+> qu'une sortie, un seul débit et aucune archive (ADR-0010).
 
 ⚠️ **L'archive est encodée dans une passe à part**, par le job d'archivage, après `COMPLETED` —
 et **uniquement sur le chemin `POST /upload`**, que cette plateforme n'emprunte pas. Pour une
@@ -362,8 +424,13 @@ caddy run --config ./Caddyfile
 # ou: docker run -p 8080:80 -v $PWD/Caddyfile:/etc/caddy/Caddyfile:ro -e APP_UPSTREAM=… caddy:2
 ```
 
-Le préfixe `hls/` du bucket est rendu **lisible anonymement** par le one-shot `createbucket`
-(`mc anonymous set download …/hls`) ; l'archive FLAC (`archives/`) reste privée.
+Les préfixes `hls/`, `dl/` et `radio/` du bucket sont rendus **lisibles anonymement** par le
+one-shot `createbucket` (`mc anonymous set download …/hls`, `…/dl`, `…/radio`) ; l'archive
+FLAC (`archives/`) reste privée.
+
+⚠️ **Jamais d'`encode` dans les blocs `/dl/*` et `/radio/*`** : compresser ces octets casse
+la reprise de téléchargement par plage (spike #184), et l'antenne se déplace dans le
+fichier. La compression est déclarée dans le seul bloc fourre-tout.
 
 ---
 
@@ -400,6 +467,8 @@ Le préfixe `hls/` du bucket est rendu **lisible anonymement** par le one-shot `
   - `0007` ingestion par URL : la Source reste chez l'appelant, pas d'archive
   - `0008` suppression : c'est la file, pas `status`, qui décide (409 si un worker
     détient le Transcode)
+  - `0009` rendus progressifs `.aac` pour le téléchargement hors ligne
+  - `0010` profil `radio` : une sortie unique, normalisée en niveau à l'ingestion
 
 ### Structure
 
