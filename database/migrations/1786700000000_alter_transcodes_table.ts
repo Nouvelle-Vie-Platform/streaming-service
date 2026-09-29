@@ -14,10 +14,7 @@ export default class extends BaseSchema {
       // omet la colonne restent dans le régime existant. Une valeur par défaut
       // portée par l'application aurait laissé la colonne `NULL` sur le fonds
       // déjà transcodé, et chaque lecture aurait dû se souvenir de la traduire.
-      table
-        .enum('profile', ['teaching', 'radio'])
-        .notNullable()
-        .defaultTo('teaching')
+      table.enum('profile', ['teaching', 'radio']).notNullable().defaultTo('teaching')
 
       // La piste radio (issue #46), persistée comme un seul objet JSON :
       // `{ url, bytes, loudness, tags }` — l'URL absolue non signée, la taille

@@ -3,13 +3,13 @@
 Blue/green sur le VPS Contabo, derrière un Caddy qui tourne **sur l'hôte**. PostgreSQL, Redis et
 RustFS sont **externes** ; ce stack les rejoint par leurs réseaux Docker existants.
 
-| | |
-|---|---|
-| Domaine | `https://stream.eenv.brainsial.com` |
-| Dossier VPS | `/opt/eenv-stream/` |
-| Ports (127.0.0.1) | `3002` bleu · `3003` vert |
-| Image | `ghcr.io/nouvelle-vie-platform/streaming-service` |
-| Bucket | `eenv-streaming` — `hls/`, `dl/` et `radio/` publics, `archives/` privé |
+|                   |                                                                         |
+| ----------------- | ----------------------------------------------------------------------- |
+| Domaine           | `https://stream.eenv.brainsial.com`                                     |
+| Dossier VPS       | `/opt/eenv-stream/`                                                     |
+| Ports (127.0.0.1) | `3002` bleu · `3003` vert                                               |
+| Image             | `ghcr.io/nouvelle-vie-platform/streaming-service`                       |
+| Bucket            | `eenv-streaming` — `hls/`, `dl/` et `radio/` publics, `archives/` privé |
 
 ## Ce qui le distingue du portail
 

@@ -93,12 +93,12 @@ d'une piste audio) est **asynchrone** : un fichier sans audio est accepté puis 
 Ingestion par **URL** — le seul chemin que la plateforme emprunte : le portail range le
 média dans RustFS puis nous remet une URL présignée. `application/json` :
 
-| Champ            | Requis | Description                                                               |
-| ---------------- | ------ | ------------------------------------------------------------------------- |
-| `sourceUrl`      | ✅     | URL complète et lisible **pendant tout l'encodage** (ADR-0007).           |
-| `profile`        | —      | `teaching` (défaut) ou `radio` — voir ci-dessous.                         |
-| `callbackUrl`    | —      | URL notifiée à la finalisation (webhook).                                 |
-| `callbackSecret` | —      | Secret HMAC pour signer le webhook.                                       |
+| Champ            | Requis | Description                                                     |
+| ---------------- | ------ | --------------------------------------------------------------- |
+| `sourceUrl`      | ✅     | URL complète et lisible **pendant tout l'encodage** (ADR-0007). |
+| `profile`        | —      | `teaching` (défaut) ou `radio` — voir ci-dessous.               |
+| `callbackUrl`    | —      | URL notifiée à la finalisation (webhook).                       |
+| `callbackSecret` | —      | Secret HMAC pour signer le webhook.                             |
 
 Même réponse `202` que l'upload, même cycle de vie, mêmes notifications. Aucune copie
 locale durable, aucune archive FLAC : le master reste l'objet de l'appelant (ADR-0007).
