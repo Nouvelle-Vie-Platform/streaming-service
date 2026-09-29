@@ -188,10 +188,13 @@ PENDING ──▶ PROCESSING ──▶ COMPLETED     (master.m3u8 + segments ser
 Les qualités HLS produites : **3 rendus AAC-LC** — `low` 64 kbps, `mid` 128 kbps,
 `high` 192 kbps — plus un `master.m3u8`. Une **archive FLAC** sans perte est conservée dans RustFS.
 
-⚠️ **L'archive est encodée dans une passe à part**, par le job d'archivage, après `COMPLETED`.
-Elle partageait le décodage de la passe de service ; la mesure a montré que cette économie
-retardait le moment où l'enseignement devient écoutable, pour un fichier que personne n'attend.
-Le prix assumé : la source est décodée deux fois, la seconde dans un job de fond.
+⚠️ **L'archive est encodée dans une passe à part**, par le job d'archivage, après `COMPLETED` —
+et **uniquement sur le chemin `POST /upload`**, que cette plateforme n'emprunte pas. Pour une
+ingestion par URL, le master déposé _est_ l'archive : le service n'en recopie aucune (ADR-0007),
+et le portail ne purge jamais la source d'un dépôt rattaché (son ADR-0033).
+
+> Autrement dit : **aucun FLAC n'est produit en production aujourd'hui**, et ce n'est pas un trou
+> — c'est la conservation du fichier d'origine, piste vidéo comprise, décidée ailleurs.
 
 ### Savoir où passe le temps
 
@@ -239,9 +242,10 @@ Trois champs font le travail :
   l'encodage est rapide ou lent : « 1006 s » ne veut rien dire sans la durée de l'audio.
   Un seul flux AAC fait plusieurs dizaines de fois le temps réel ; **6,4× est la signature
   d'encodages sérialisés dans un même fil**.
-- **`regime`** — `depot` (fichier local) ou `url` (ffmpeg lit la source à distance, et la
-  **télécharge donc pendant l'encodage**). Deux causes possibles à un `encode` long, deux
-  remèdes opposés.
+- **`regime`** — **par où ffmpeg a lu la source**, et non comment l'enseignement a été déposé.
+  ⚠️ Un administrateur qui **téléverse un fichier** produit `url` : le portail range le média
+  dans RustFS puis remet au service une **URL présignée**. `fichier` désigne `POST /upload`, que
+  ce service expose et que la plateforme n'appelle jamais.
 - **`items`** — le nombre de fichiers envoyés. Un `uploadHls` long avec beaucoup d'`items` dit
   que le coût est **par fichier** ; peu d'`items` dirait l'inverse.
 
@@ -258,10 +262,12 @@ Trois champs font le travail :
 > Paralléliser l'envoi — le réflexe — aurait gagné moins d'une minute sur dix-huit. C'est cette
 > mesure qui a évité d'optimiser les 5 %.
 >
-> Le second était une **ingestion par URL**, donc **sans archive FLAC** — ni avant ni après son
-> retrait de la passe. Il tourne pourtant au même régime que le premier : le FLAC n'était pas
-> le coût. Ce qui reste, ce sont **six encodages AAC qui se suivent dans un même fil** (trois
-> rendus HLS, trois `.aac`), à ~34× le temps réel chacun.
+> Les deux venaient du portail, donc en `url`, donc **sans archive FLAC** — c'est le régime de
+> _tous_ les transcodages de cette plateforme. Ils tournent au même rythme, et le FLAC n'y était
+> pour rien : il n'y en a jamais eu. Ce qui reste, ce sont **six encodages AAC qui se suivent
+> dans un même fil** (trois rendus HLS, trois `.aac`), à ~34× le temps réel chacun.
+>
+> La source est lue depuis le RustFS de **la même machine** : le réseau n'est pas en cause.
 
 > Cette mesure existe parce que le service ne mesurait rien et qu'on optimisait de mémoire.
 > Deux des trois soupçons habituels ne s'appliquent même pas ici : il n'y a pas de `-re` dans
