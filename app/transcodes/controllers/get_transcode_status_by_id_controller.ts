@@ -16,6 +16,11 @@ import vine from '@vinejs/vine'
  * the live Redis value written by the worker, falling back to a status-derived
  * value when Redis is silent.
  *
+ * Sur le profil `radio`, la forme gagne un champ `radioTrack` à `COMPLETED`
+ * (ADR-0010) : il n'y a pas de playlist à publier, et **ce snapshot est le chemin
+ * de rattrapage** d'un appelant dont le webhook s'est perdu. Voir
+ * `TranscodeTransformer` pour les deux gardes qui l'encadrent.
+ *
  * A malformed id is a 422 (validation); a well-formed but unknown id is a 404.
  */
 @inject()
@@ -33,6 +38,8 @@ export default class GetTranscodeStatusByIdController {
    * @operationId getTranscodeStatus
    * @description Return the current state of a Transcode by its id: status,
    * progress, output playlist and error — identical in shape to the SSE payload.
+   * On the `radio` profile the payload carries `radioTrack` (url, bytes, measured
+   * loudness, source tags) instead of a playlist, and `outputPlaylist` is null.
    * @paramPath id - Transcode UUID v7 - @type(string) @required
    * @responseBody 200 - <Transcode>
    * @responseBody 404 - {"code":"E_TRANSCODE_NOT_EXISTS"}

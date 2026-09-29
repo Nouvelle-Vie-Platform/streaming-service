@@ -102,11 +102,30 @@ La cible de niveau est **-16 LUFS / -1,5 dBTP** : la convention de la diffusion 
 souvent dans le bruit. Le -1,5 dBTP laisse de la marge au ré-encodage de liquidsoap, dont
 un lossy parti d'un pic à -0,1 fabriquerait des pics inter-échantillons au-dessus de 0.
 
-## Ce que le webhook porte, et ce qu'il ne porte pas
+## Ce que les canaux portent, et ce qu'ils ne portent pas
 
-Le contrat unifié à cinq champs ne bouge pas ; c'est le **webhook** qui enrichit, comme
-l'a fait l'ADR-0009. Sur ce profil il ajoute un champ `radioTrack` :
-l'URL unique, la taille en octets, le **niveau mesuré** et les **étiquettes** de la source.
+La sortie est publiée sous un champ `radioTrack` — l'URL unique, la taille en octets, le
+**niveau mesuré** et les **étiquettes** de la source — et elle l'est dans **les trois
+canaux à la fois** : le poll de statut, le SSE et le webhook. C'est la règle que
+l'ADR-0006 a posée pour `outputPlaylist` et il n'y a aucune raison de lui faire exception.
+
+> **Amendement du 29/09/2026 — le webhook seul ne suffisait pas, et c'était un défaut de
+> correction.** Cet ADR a d'abord réservé `radioTrack` au webhook, en s'appuyant sur le fait
+> que le contrat unifié à cinq champs ne devait pas bouger. Le raisonnement tenait sur la
+> forme et manquait le fond : **le portail règle un dépôt depuis le snapshot de statut quand
+> un webhook a été perdu** (son réconciliateur périodique). Une sortie radio absente du
+> snapshot rendait donc un dépôt dont le webhook s'est perdu **définitivement
+> irrécupérable** — l'URL, le niveau et les étiquettes ne se relisent nulle part ailleurs,
+> le webhook ne repart pas, et la passe ne sera pas rejouée.
+>
+> Le champ est donc servi par les trois canaux. L'argument de nommage qui a motivé le refus
+> initial reste intact : on n'a rien rangé dans un champ « playlist », on a ajouté un champ
+> qui dit ce qu'il est.
+
+`radioTrack` n'est publié qu'à **`COMPLETED`**. La ligne le porte plus tôt — dès la fin de
+l'encodage, avant l'envoi vers RustFS (voir plus bas *pourquoi* si tôt) — mais publier l'URL
+avant annoncerait des octets qui ne sont pas encore servables, alors que `COMPLETED` veut
+précisément dire « lisible depuis RustFS » (ADR-0004).
 
 Le niveau publié n'est pas une prédiction : `loudnorm` imprime la loudness du **résultat**
 à la fin de la passe qui l'écrit. Aucun décodage de plus n'a été dépensé pour l'obtenir, et
@@ -119,6 +138,13 @@ enseignement doit rester au champ près celle que le portail reçoit aujourd'hui
 `outputPlaylist` vaut `null` sur ce profil, et la colonne reste vide. **Il n'y a pas de
 playlist** : y ranger l'URL d'un `.m4a` ferait mentir le nom de la colonne dans les trois
 canaux à la fois.
+
+⚠️ **Conséquence pour l'appelant, et elle est piégeuse** : `outputPlaylist === null` à
+`COMPLETED` **n'est pas une anomalie** sur ce profil, c'est sa signature. Un consommateur
+qui traite « terminé sans playlist » comme une panne classera **chaque** transcodage radio
+réussi en échec. C'est le **profil du dépôt** qui dit où regarder — `radioTrack` pour une
+radio, `outputPlaylist` pour un enseignement — et cette lecture est à la charge de
+l'appelant.
 
 ## Pourquoi MP4/M4A, et non l'ADTS des téléchargements
 

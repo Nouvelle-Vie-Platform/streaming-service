@@ -70,7 +70,9 @@ _Avoid_: Stream, Rendus, Playlist (seul)
 Ce que l'appelant demande qu'on **fabrique**, choisi au dépôt (`POST /transcodes`) et
 immuable ensuite. `teaching` (le défaut, porté par la base) est le régime historique :
 HLS output à 3 rendus, 3 Rendus progressifs, Archive audio sur le chemin par upload.
-`radio` produit une seule **Piste radio** — ni HLS, ni rendus progressifs, ni archive.
+`radio` produit une seule **Piste radio** — ni HLS, ni rendus progressifs, ni archive ;
+`outputPlaylist` y reste `null` à `COMPLETED`, et ce n'est pas une anomalie : c'est le
+profil qui dit dans quel champ la sortie se lit.
 Le profil décide de **ce qui est encodé et publié**, jamais du cycle de vie : mêmes
 états, même progression, même point de reprise, même webhook, même Reprise (ADR-0010).
 _Avoid_: Mode, Type, Preset, Régime (réservé au chemin d'ingestion dans les journaux)
@@ -82,16 +84,19 @@ sous `radio/<id>/track.m4a` et servi depuis RustFS par une URL **non signée et
 permanente**. Un master de diffusion, pas un flux d'écoute : liquidsoap le lit d'un bout
 à l'autre et ré-encode ce qu'il diffuse. MP4 et non ADTS parce que l'antenne a besoin de
 la **durée exacte** portée par le conteneur, pour ses fondus et ses coupures. Le niveau
-homogène est l'objet de ce profil : sans lui, chaque enchaînement s'entend.
+homogène est l'objet de ce profil : sans lui, chaque enchaînement s'entend. Publiée sous
+le champ `radioTrack` par les **trois canaux** (poll, SSE, webhook) et **seulement à
+`COMPLETED`** : la ligne la porte plus tôt que les octets ne sont servables.
 _Avoid_: Titre, Morceau, Rendu radio, Flux
 
 **Canal temps réel (SSE)**:
 Le flux Server-Sent-Events sur lequel un client suit un Transcode en direct, un canal
 par ressource nommé `transcodes/<id>` (séparateur `/`, calé sur la route). On y pousse
 **exactement la même charge utile** que le poll de statut (`id, status, progress,
-outputPlaylist, error`) : un seul contrat. La diffusion passe par le transport Redis de
-Transmit, car le worker (qui encode) et le serveur HTTP (auquel le client est connecté)
-sont deux processus distincts. Canal **ouvert** pour l'instant ; l'auth arrive au jalon H.
+outputPlaylist, error`, plus `radioTrack` sur le seul profil `radio`) : un seul
+contrat. La diffusion passe par le transport Redis de Transmit, car le worker (qui
+encode) et le serveur HTTP (auquel le client est connecté) sont deux processus
+distincts. Canal **ouvert** pour l'instant ; l'auth arrive au jalon H.
 _Avoid_: WebSocket, Socket, Topic, Room
 
 **Webhook de complétion / Callback**:

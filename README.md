@@ -115,8 +115,9 @@ radio/<id>/track.m4a      ← la piste, non signée et permanente
 
 Ni jeu HLS (segmenter une chanson de trois minutes n'apporte rien), ni rendus
 progressifs, ni archive FLAC. `outputPlaylist` reste donc `null` : il n'y a pas de
-playlist. C'est le **webhook** qui porte la sortie, dans un champ `radioTrack` — l'URL
-unique, la taille, le **niveau mesuré** et les **étiquettes** lues sur la source.
+playlist. La sortie est portée par un champ `radioTrack` — l'URL unique, la taille, le
+**niveau mesuré** et les **étiquettes** lues sur la source — servi par les **trois
+canaux** (poll, SSE, webhook). Voir [le contrat unifié](#le-contrat-unifié).
 
 Sans niveau homogène, chaque enchaînement s'entend et l'auditeur corrige son volume à
 chaque titre ; c'est pourquoi la normalisation est faite **à l'ingestion**, une fois par
@@ -174,13 +175,54 @@ Polling et SSE servent la même forme :
 `progress` est un entier `0–100`, ou `null` quand la durée est indéterminée. `outputPlaylist`
 est renseigné à `COMPLETED` ; `error` à `FAILED`.
 
+#### Un sixième champ sur le profil `radio`, et seulement là
+
+Sur le profil `radio` (ADR-0010) il n'y a **pas de playlist** : `outputPlaylist` vaut `null`
+à `COMPLETED`, par construction. La sortie est donc publiée sous son propre nom,
+`radioTrack`, et dans **les trois canaux à la fois** — poll, SSE et webhook :
+
+```json
+{
+  "id": "01a1…",
+  "status": "COMPLETED",
+  "progress": 100,
+  "outputPlaylist": null,
+  "error": null,
+  "radioTrack": {
+    "url": "https://media.example.com/radio/01a1…/track.m4a",
+    "bytes": 2996000,
+    "loudness": { "targetI": -16, "inputI": -27.5, "outputI": -16.02, "normalization": "linear" },
+    "tags": { "title": "…", "artist": "…", "album": "…" }
+  }
+}
+```
+
+⚠️ **Deux règles que l'appelant doit connaître.**
+
+1. **`outputPlaylist === null` à `COMPLETED` n'est pas une anomalie** — c'est la signature
+   de ce profil. Un consommateur qui traite « terminé sans playlist » comme une panne
+   classera **chaque** transcodage radio réussi en échec. C'est **le profil du dépôt** qui
+   dit où regarder : `radioTrack` pour une radio, `outputPlaylist` pour un enseignement.
+2. **Le champ est absent, et non `null`, hors de ce profil.** La charge utile d'un
+   enseignement reste au champ près la forme à cinq champs qu'elle a toujours servie.
+
+`radioTrack` n'apparaît qu'à `COMPLETED`. La colonne existe plus tôt — dès la fin de
+l'encodage, avant l'envoi vers RustFS — mais publier l'URL avant annoncerait des octets qui
+ne sont pas encore servables, alors que `COMPLETED` veut précisément dire « lisible depuis
+RustFS » (ADR-0004).
+
+> **Le poll porte la sortie parce que c'est un chemin de rattrapage.** Un appelant qui règle
+> ses dépôts depuis le snapshot quand un webhook s'est perdu ne trouverait, sans ce champ,
+> aucun endroit où relire l'URL, le niveau et les étiquettes : le webhook ne repart pas et
+> la passe ne sera pas rejouée.
+
 Le **webhook** part de cette forme et l'**enrichit** (ADR-0009) : il ajoute la durée du média
 et, par rendu, l'URL de téléchargement `.aac` et sa taille en octets — que le consommateur
 persiste et sert sans faire de `HEAD`. `downloads` est peuplé à `COMPLETED`, vide à `FAILED`.
 
-Sur le profil **`radio`** (ADR-0010), la charge utile porte à la place un champ
-`radioTrack` — et **seulement** sur ce profil : la charge d'un enseignement reste au champ
-près celle d'aujourd'hui.
+Sur le profil **`radio`** (ADR-0010), la charge utile porte à la place le champ
+`radioTrack` décrit ci-dessus — le **même** que le poll et le SSE, et **seulement** sur ce
+profil : la charge d'un enseignement reste au champ près celle d'aujourd'hui.
 
 ```json
 {

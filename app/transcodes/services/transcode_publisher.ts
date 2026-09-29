@@ -10,8 +10,14 @@ import transmit from '@adonisjs/transmit/services/main'
  * (jalon F, #6) on the per-resource channel `transcodes/<id>`.
  *
  * The payload is built through `TranscodeTransformer` — the exact shape the
- * status poll serves (`id, status, progress, outputPlaylist, error`) — so a live
- * client and a polling client see one contract.
+ * status poll serves (`id, status, progress, outputPlaylist, error`, plus
+ * `radioTrack` on the `radio` profile at COMPLETED) — so a live client and a
+ * polling client see one contract.
+ *
+ * ⚠️ L'événement du **firehose** d'ops, lui, reste volontairement à ses cinq
+ * champs : c'est une forme d'observabilité, pas un contrat de publication. Une
+ * radio y apparaît donc avec `outputPlaylist: null`, et la page d'ops qui la lit
+ * doit le savoir (ADR-0010).
  *
  * Broadcasting is routed through Transmit's Redis transport (config/transmit.ts)
  * so a push from the worker process reaches SSE clients on the HTTP server.

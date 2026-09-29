@@ -222,9 +222,10 @@ export class ProcessTranscode {
            * sauterait l'encodage (ce qu'on veut) et publierait un webhook sans
            * niveau ni étiquettes (ce qu'on ne veut pas).
            *
-           * L'URL y est donc écrite avant que les octets soient servables. C'est
-           * assumé : le contrat unifié ne l'expose pas, et le seul canal qui la
-           * publie — le webhook — ne part qu'à l'état terminal.
+           * L'URL y est donc écrite avant que les octets soient servables. Ce
+           * n'est pas visible du dehors : les trois canaux ne publient
+           * `radioTrack` qu'à `COMPLETED` — c'est `TranscodeTransformer` qui tient
+           * cette garde, et c'est là qu'elle est expliquée.
            */
           transcode.radioTrack = radioTrack
           await transcode.save()
