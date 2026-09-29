@@ -122,6 +122,33 @@ l'ADR-0006 a posée pour `outputPlaylist` et il n'y a aucune raison de lui faire
 > initial reste intact : on n'a rien rangé dans un champ « playlist », on a ajouté un champ
 > qui dit ce qu'il est.
 
+> **Second amendement du 29/09/2026 — le firehose d'ops aussi, et la nuance mérite d'être
+> écrite.** Après le correctif ci-dessus, l'événement du firehose (`pipeline:events`, la
+> surface d'observabilité) gardait ses cinq champs. Le raisonnement était : ce n'est pas un
+> chemin de rattrapage, aucune donnée ne s'y perd, et **une forme d'observabilité n'est pas un
+> contrat de publication**. Cette dernière phrase est juste. Ce qu'elle ne dit pas — et c'est
+> là que le raisonnement cassait — c'est qu'**une surface d'observabilité puisse mentir sans
+> conséquence**.
+>
+> Elle ne peut pas. `outputPlaylist` vaut `null` sur ce profil par construction, donc une page
+> d'ops nourrie par ce firehose aurait présenté **chaque radio réussie** comme « terminée sans
+> média », c'est-à-dire en panne. La plateforme a une doctrine explicite là-dessus, écrite côté
+> portail à propos des pastilles de navigation : **on n'affiche jamais un zéro, parce qu'un
+> indicateur qui montre zéro apprend à être ignoré.** Une fausse alerte récurrente est pire
+> qu'un silence — elle use l'attention qu'une vraie alerte aura besoin d'emprunter. Ce dépôt a
+> déjà payé ce prix avec une sonde durablement rouge qui ne signalait plus rien.
+>
+> L'événement porte donc `radioTrack`, **sans redire la condition** : il recopie ce que
+> `TranscodeTransformer` a laissé passer. Deux règles identiques écrites à deux endroits
+> divergent, et celle-ci (« à `COMPLETED` seulement, absente hors profil ») est précisément
+> le genre de règle qu'on corrige d'un côté en oubliant l'autre. C'est aussi pourquoi le
+> contrat de publication est maintenant un type **nommé**, `TranscodeWirePayload` : le
+> firehose s'appuie sur une forme déclarée, pas sur ce que l'inférence a bien voulu produire.
+>
+> Preuve que la règle n'a pas été dupliquée : les deux cas de test existants du firehose
+> n'ont eu **aucune** modification à subir. Un enseignement ne gagne pas un champ parce qu'un
+> autre profil est né.
+
 `radioTrack` n'est publié qu'à **`COMPLETED`**. La ligne le porte plus tôt — dès la fin de
 l'encodage, avant l'envoi vers RustFS (voir plus bas *pourquoi* si tôt) — mais publier l'URL
 avant annoncerait des octets qui ne sont pas encore servables, alors que `COMPLETED` veut
@@ -189,6 +216,10 @@ rendrait `null` sur un FLAC.
   une erreur, alors qu'une reprise qui se fie à la colonne laisserait des octets servables
   le jour où la colonne et les octets ne s'accordent pas — exactement ce que l'ADR-0008
   reproche à `status`.
+- **L'observabilité porte la sortie elle aussi.** L'événement `pipeline:events` gagne le même
+  champ conditionnel que le contrat unifié, relayé et non recalculé. Une surface qui affiche
+  « terminé sans média » à chaque succès n'est pas neutre : elle fabrique la fausse alerte qui
+  fera ignorer les vraies.
 - **La porte publique s'élargit** : un bloc `handle /radio/*` dans les deux Caddyfiles, sur
   le modèle de `/dl/*` — CORS, requêtes par plage, et **jamais d'`encode`** (spike #184). Le
   préfixe `radio/` du bucket doit être lisible anonymement, **non signé et permanent** : une

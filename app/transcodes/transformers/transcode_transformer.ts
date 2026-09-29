@@ -1,6 +1,31 @@
 import type Transcode from '#transcodes/models/transcode'
+import type { RadioTrackInfo } from '#transcodes/support/hls'
+import type { TranscodeStatus } from '#transcodes/support/transcode_enums'
 import { progressFromStatus } from '#transcodes/support/transcode_progress'
 import { BaseTransformer } from '@adonisjs/core/transformers'
+
+/**
+ * **Le contrat de publication d'un Transcode**, nommé une fois — la forme que
+ * servent le `202` d'ingestion, le poll de statut et le SSE, et dont le webhook
+ * part pour l'enrichir.
+ *
+ * Écrit explicitement, et non laissé à l'inférence, pour deux raisons : le champ
+ * conditionnel `radioTrack` rend le type inféré difficile à lire, et le firehose
+ * d'ops **relit** ce champ pour le relayer — il vaut mieux qu'il s'appuie sur un
+ * contrat déclaré que sur ce que le compilateur a bien voulu déduire.
+ *
+ * Un `type` et non une `interface` : un alias reçoit une signature d'index
+ * implicite, donc il reste assignable là où un `Record<string, …>` est attendu.
+ */
+export type TranscodeWirePayload = {
+  id: string
+  status: TranscodeStatus
+  progress: number | null
+  outputPlaylist: string | null
+  error: string | null
+  /** Présent sur le seul profil `radio`, et seulement à `COMPLETED` (ADR-0010). */
+  radioTrack?: RadioTrackInfo
+}
 
 /**
  * The single wire shape of a Transcode (see Q14 of the design): the upload
@@ -49,7 +74,7 @@ export default class TranscodeTransformer extends BaseTransformer<Transcode> {
     super(resource)
   }
 
-  toObject() {
+  toObject(): TranscodeWirePayload {
     // Une piste radio n'est publiée qu'une fois **servable** : la colonne existe
     // plus tôt que les octets. Voir l'en-tête.
     const radioTrack =
