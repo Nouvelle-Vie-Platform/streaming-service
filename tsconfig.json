@@ -3,5 +3,15 @@
   "compilerOptions": {
     "rootDir": "./",
     "outDir": "./build"
-  }
+  },
+  /*
+   * ⚠️ **`storage` est exclu parce qu'un segment HLS s'appelle `.ts`.**
+   *
+   * Le profil `sparks` (issue #49) écrit des segments MPEG-TS sous
+   * `storage/hls/<id>/`, et `tsc` les lit comme du TypeScript : un banc
+   * interrompu avant son nettoyage faisait rougir `npm run typecheck` avec
+   * « Invalid character » sur des octets vidéo, à des kilomètres du code touché.
+   * Le diagnostic coûte dix minutes et n'apprend rien.
+   */
+  "exclude": ["build", "node_modules", "storage"]
 }
