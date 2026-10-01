@@ -5,7 +5,7 @@ import {
   ListObjectsV2Command,
   PutObjectCommand,
 } from '@aws-sdk/client-s3'
-import { DOWNLOAD_FORMAT, RADIO_FORMAT } from '#transcodes/support/hls'
+import { DOWNLOAD_FORMAT, POSTER_FORMAT, RADIO_FORMAT } from '#transcodes/support/hls'
 import { readdir, readFile } from 'node:fs/promises'
 import { extname, join, relative, sep } from 'node:path'
 
@@ -19,6 +19,11 @@ const CONTENT_TYPES: Record<string, string> = {
   // Piste radio (issue #46) ; dérivé du format pour la même raison : un
   // changement de conteneur reste une ligne dans hls.ts.
   [`.${RADIO_FORMAT.extension}`]: RADIO_FORMAT.contentType,
+  // La vignette d'un Spark (issue #49). Elle voyage **dans** le dossier HLS, donc
+  // elle part par le même `uploadDirectory` que les segments : sans cette entrée
+  // elle sortirait en `application/octet-stream`, et un navigateur la
+  // téléchargerait au lieu de l'afficher.
+  [`.${POSTER_FORMAT.extension}`]: POSTER_FORMAT.contentType,
 }
 
 /** S3 caps a single DeleteObjects call at 1000 keys. */

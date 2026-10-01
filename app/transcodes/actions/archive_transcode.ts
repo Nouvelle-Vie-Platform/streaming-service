@@ -70,8 +70,16 @@ export class ArchiveTranscode {
      * `POST /upload` au profil radio, la discothèque se mettrait à produire un
      * FLAC sans perte par titre, silencieusement, dans un bucket dimensionné
      * pour des sermons.
+     *
+     * ⚠️ **Écrit en liste blanche, et non en liste noire** (issue #49). La garde
+     * disait `!== 'radio'` : le profil `sparks`, né ensuite, est donc passé du bon
+     * côté sans que personne l'ait décidé. Une annonce filmée au téléphone n'a pas
+     * plus besoin d'un master FLAC qu'un titre de l'antenne — et la prochaine fois
+     * la question se reposera. `=== 'teaching'` fait que le silence par défaut est
+     * « pas d'archive », ce qui est le bon défaut : l'archive est une exception
+     * coûteuse, pas une politesse.
      */
-    const archivable = !params.remote && (params.profile ?? DEFAULT_PROFILE) !== 'radio'
+    const archivable = !params.remote && (params.profile ?? DEFAULT_PROFILE) === 'teaching'
 
     if (archivable) {
       // Déjà là = un rejeu après un envoi refusé. Ré-encoder coûterait autant

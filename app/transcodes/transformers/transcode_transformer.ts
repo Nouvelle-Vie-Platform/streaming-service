@@ -1,5 +1,5 @@
 import type Transcode from '#transcodes/models/transcode'
-import type { RadioTrackInfo } from '#transcodes/support/hls'
+import type { RadioTrackInfo, SparkMedia } from '#transcodes/support/hls'
 import type { TranscodeStatus } from '#transcodes/support/transcode_enums'
 import { progressFromStatus } from '#transcodes/support/transcode_progress'
 import { BaseTransformer } from '@adonisjs/core/transformers'
@@ -25,6 +25,16 @@ export type TranscodeWirePayload = {
   error: string | null
   /** Présent sur le seul profil `radio`, et seulement à `COMPLETED` (ADR-0010). */
   radioTrack?: RadioTrackInfo
+  /**
+   * Présent sur le seul profil `sparks`, et seulement à `COMPLETED` (ADR-0011).
+   *
+   * ⚠️ `outputPlaylist` n'est **pas** `null` sur ce profil : un Spark produit un
+   * vrai jeu HLS, et la playlist se lit où elle s'est toujours lue. `sparkMedia`
+   * porte ce qui n'y tient pas — la vignette, la forme d'onde, le niveau, les
+   * étiquettes — et redit l'URL de la playlist pour qu'un lecteur de ce champ
+   * n'ait pas à savoir qu'une moitié de sa réponse est ailleurs.
+   */
+  sparkMedia?: SparkMedia
 }
 
 /**
@@ -36,7 +46,7 @@ export type TranscodeWirePayload = {
  * falls back to a value derived from the durable status when Redis is silent —
  * 0 for PENDING, 100 for COMPLETED, null for an in-flight job with no value.
  *
- * ## Le sixième champ, et pourquoi il n'est pas toujours là
+ * ## Les champs conditionnels, et pourquoi ils ne sont pas toujours là
  *
  * Sur le profil `radio` (ADR-0010) il n'y a **pas de playlist** : `outputPlaylist`
  * vaut `null` à `COMPLETED`, par construction. La sortie est donc publiée sous son
@@ -79,6 +89,10 @@ export default class TranscodeTransformer extends BaseTransformer<Transcode> {
     // plus tôt que les octets. Voir l'en-tête.
     const radioTrack =
       this.resource.status === 'COMPLETED' ? (this.resource.radioTrack ?? null) : null
+    // Même garde, même raison : la colonne existe dès la fin de l'encodage, les
+    // octets ne sont servables qu'à `COMPLETED`.
+    const sparkMedia =
+      this.resource.status === 'COMPLETED' ? (this.resource.sparkMedia ?? null) : null
 
     return {
       id: this.resource.id,
@@ -89,6 +103,7 @@ export default class TranscodeTransformer extends BaseTransformer<Transcode> {
       outputPlaylist: this.resource.outputPlaylist ?? null,
       error: this.resource.error ?? null,
       ...(radioTrack ? { radioTrack } : {}),
+      ...(sparkMedia ? { sparkMedia } : {}),
     }
   }
 }

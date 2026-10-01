@@ -2,7 +2,7 @@ import { compose } from '@adonisjs/core/helpers'
 import { column } from '@adonisjs/lucid/orm'
 import { withUuid } from '#common/mixins/with_uuid'
 import { TranscodeSchema } from '#database/schema'
-import type { DownloadRenditionInfo, RadioTrackInfo } from '#transcodes/support/hls'
+import type { DownloadRenditionInfo, RadioTrackInfo, SparkMedia } from '#transcodes/support/hls'
 
 /**
  * The durable state of a Transcode — the source of truth for its lifecycle
@@ -55,4 +55,19 @@ export default class Transcode extends compose(TranscodeSchema, withUuid()) {
     },
   })
   declare radioTrack: RadioTrackInfo | null
+
+  /**
+   * La sortie d'un Spark (issue #49), surchargée pour la même raison que les deux
+   * précédentes : rendre explicite l'aller-retour jsonb. Trois colonnes jsonb, une
+   * seule discipline.
+   */
+  @column({
+    prepare: (value: SparkMedia | null) =>
+      value === null || value === undefined ? value : JSON.stringify(value),
+    consume: (value: unknown): SparkMedia | null => {
+      if (value === null || value === undefined) return null
+      return (typeof value === 'string' ? JSON.parse(value) : value) as SparkMedia
+    },
+  })
+  declare sparkMedia: SparkMedia | null
 }

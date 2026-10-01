@@ -41,9 +41,10 @@ export default class IngestUrlController {
       .optional(),
     callbackSecret: vine.string().maxLength(512).optional(),
     /**
-     * Le profil de sortie (issue #46). Facultatif : absent, c'est le régime des
-     * enseignements, inchangé. `radio` produit une sortie unique normalisée en
-     * niveau, sans HLS ni archive.
+     * Le profil de sortie. Facultatif : absent, c'est le régime des enseignements,
+     * inchangé. `radio` produit une sortie unique normalisée en niveau, sans HLS
+     * ni archive (ADR-0010) ; `sparks` un jeu HLS court à deux rendus, segments de
+     * 5 s, **piste vidéo encodée** quand il y en a une (ADR-0011).
      */
     profile: vine.enum(TRANSCODE_PROFILES).optional(),
   })
@@ -57,7 +58,8 @@ export default class IngestUrlController {
    * kept as the master. Responds 202 with the created Transcode; media validation
    * (a decodable audio track) happens asynchronously in the worker.
    * Un `profile` optionnel choisit la forme de la sortie : `teaching` (défaut,
-   * le jeu HLS) ou `radio` (une seule piste normalisée en niveau, ADR-0010).
+   * le jeu HLS), `radio` (une seule piste normalisée en niveau, ADR-0010) ou
+   * `sparks` (jeu HLS à deux rendus, segments de 5 s, vidéo encodée, ADR-0011).
    * @requestBody {"sourceUrl":"https://bucket.example.com/audio.mp3","profile":"radio"}
    * @responseBody 202 - <Transcode>
    * @responseBody 422 - {"code":"E_VALIDATION_ERROR"}

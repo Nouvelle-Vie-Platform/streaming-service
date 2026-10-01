@@ -1,5 +1,5 @@
 import type { TranscodeStatus } from '#transcodes/support/transcode_enums'
-import type { DownloadRenditionInfo, RadioTrackInfo } from '#transcodes/support/hls'
+import type { DownloadRenditionInfo, RadioTrackInfo, SparkMedia } from '#transcodes/support/hls'
 import { queueConnection } from '#config/queue'
 import { Queue } from 'bullmq'
 
@@ -36,6 +36,22 @@ export interface WebhookPayload {
    * s'appelle « playlist ».
    */
   radioTrack?: RadioTrackInfo
+  /**
+   * La sortie d'un Spark (issue #49) : l'URL de la playlist, la vignette, la
+   * durée, la forme d'onde, le **niveau mesuré** et les **étiquettes**.
+   *
+   * ⚠️ **Absent, et non `null`, hors du profil `sparks`** — même règle, même
+   * raison. Ici, contrairement à la radio, `outputPlaylist` est **rempli** : un
+   * Spark produit un vrai jeu HLS. `downloads` reste vide (ADR-0009 : pas de
+   * client hors ligne à servir).
+   *
+   * Déclaré **ici et pas seulement à l'appel** : la charge est construite par un
+   * littéral avec étalement conditionnel, et l'étalement échappe au contrôle des
+   * propriétés en excès. Un champ publié par le webhook sans être déclaré dans ce
+   * type compilerait donc en silence, et le consommateur le découvrirait en
+   * production.
+   */
+  sparkMedia?: SparkMedia
 }
 
 /**

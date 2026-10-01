@@ -1,4 +1,4 @@
-import type { RadioTrackInfo } from '#transcodes/support/hls'
+import type { RadioTrackInfo, SparkMedia } from '#transcodes/support/hls'
 import env from '#start/env'
 import logger from '@adonisjs/core/services/logger'
 import { Redis } from 'ioredis'
@@ -34,6 +34,17 @@ export interface PipelineFirehoseEvent {
    * identiques écrites à deux endroits divergent.
    */
   radioTrack?: RadioTrackInfo
+  /**
+   * La sortie du profil `sparks` (ADR-0011), aux mêmes conditions et **relayée de
+   * la même façon** : le contrat unifié a déjà tranché, l'événement recopie.
+   *
+   * La raison est moins criante que pour la radio — un Spark porte bien un
+   * `outputPlaylist`, donc une page d'ops ne le verrait pas « terminé sans
+   * média ». Elle est de même nature : c'est par ce canal qu'on verra, sans
+   * requête, **la proportion de `normalization: dynamic`**, le chiffre que
+   * l'ADR-0010 désigne comme celui à surveiller en production.
+   */
+  sparkMedia?: SparkMedia
 }
 
 /**
