@@ -2,7 +2,7 @@ import { test } from '@japa/runner'
 import type Transcode from '#transcodes/models/transcode'
 import { PipelineFirehose } from '#transcodes/services/pipeline_firehose'
 import { TranscodePublisher } from '#transcodes/services/transcode_publisher'
-import type { RadioTrackInfo } from '#transcodes/support/hls'
+import type { RadioTrackInfo, SparkMedia } from '#transcodes/support/hls'
 
 const ID = '0191ffff-0000-7000-8000-000000000200'
 
@@ -22,6 +22,29 @@ const RADIO_TRACK: RadioTrackInfo = {
     normalization: 'linear',
   },
   tags: { title: 'Jésus est vivant', artist: 'Chorale', album: 'Louange 2026' },
+}
+
+/** Ce qu'un Spark publie, tel que `ProcessTranscode` le pose sur la ligne. */
+const SPARK_MEDIA: SparkMedia = {
+  playlist: `https://media.example.com/hls/${ID}/master.m3u8`,
+  poster: `https://media.example.com/hls/${ID}/poster.jpg`,
+  hasVideo: true,
+  durationSeconds: 28.4,
+  waveform: [
+    0, 0, 3, 41, 78, 92, 100, 87, 64, 51, 44, 39, 35, 30, 28, 25, 22, 20, 18, 17, 15, 14, 12, 11,
+    10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0,
+  ],
+  loudness: {
+    targetI: -16,
+    inputI: -23.01,
+    inputTp: -10.78,
+    inputLra: 8,
+    outputI: -15.71,
+    outputTp: -5.03,
+    outputLra: 8,
+    normalization: 'linear',
+  },
+  tags: { title: 'Rassemblement de jeunesse', artist: null, album: null },
 }
 
 /** A firehose that records what the publisher fans out, without a real Redis. */
@@ -108,6 +131,35 @@ test.group('TranscodePublisher raw firehose', () => {
         error: null,
         outputPlaylist: null,
         radioTrack: RADIO_TRACK,
+      },
+    ])
+  })
+
+  test('un Spark terminé porte sa sortie sur le firehose (ADR-0011)', async ({ assert }) => {
+    // Ici la raison n'est pas qu'une page d'ops mentirait — `outputPlaylist` est
+    // rempli sur ce profil. C'est que **la proportion de `normalization: dynamic`**
+    // est le chiffre à surveiller en production, et que ce canal est le seul qui
+    // le donne sans requête.
+    const firehose = new FirehoseSpy()
+    const publisher = new TranscodePublisher(firehose)
+
+    publisher.broadcast(
+      fakeTranscode({
+        status: 'COMPLETED',
+        outputPlaylist: SPARK_MEDIA.playlist,
+        sparkMedia: SPARK_MEDIA,
+      }),
+      100
+    )
+
+    assert.deepEqual(firehose.events, [
+      {
+        transcodeId: ID,
+        status: 'COMPLETED',
+        progress: 100,
+        error: null,
+        outputPlaylist: SPARK_MEDIA.playlist,
+        sparkMedia: SPARK_MEDIA,
       },
     ])
   })

@@ -1,17 +1,24 @@
 # Streaming Service
 
-Module de diffusion audio de New Life : reçoit un fichier source (audio ou vidéo),
-en extrait l'audio, l'encode en HLS et expose l'avancement en temps réel. C'est le
-« module de diffusion externe » évoqué par l'ADR-0005 de `new-life-server` : les octets
-lourds (segments, transcodage) vivent ici, pas dans le serveur applicatif.
+Module de diffusion de New Life : reçoit un fichier source (audio ou vidéo), l'encode
+selon le **Profil** demandé et expose l'avancement en temps réel. C'est le « module de
+diffusion externe » évoqué par l'ADR-0005 de `new-life-server` : les octets lourds
+(segments, transcodage) vivent ici, pas dans le serveur applicatif.
+
+**Audio par défaut, pas audio par nature.** Les profils `teaching` et `radio` jettent la
+piste vidéo et n'encodent que le son ; le profil `sparks` l'encode (ADR-0011, amendement
+de l'ADR-0001). C'est **le profil** qui dit ce qui est encodé, et la phrase « une vidéo est
+un simple conteneur » n'est vraie que de deux profils sur trois.
 
 ## Language
 
 **Transcode**:
-Un job de transcodage : la conversion d'un fichier source unique en un flux HLS
-**audio uniquement**, identifié par un UUID v7. Porte un cycle de vie (PENDING →
-PROCESSING → COMPLETED/FAILED) et une progression. La sortie ne contient jamais de
-piste vidéo : une vidéo n'est acceptée que comme conteneur dont on extrait l'audio (`-vn`).
+Un job de transcodage : la conversion d'un fichier source unique en la sortie que son
+**Profil** décrit, identifié par un UUID v7. Porte un cycle de vie (PENDING → PROCESSING →
+COMPLETED/FAILED) et une progression. Sous `teaching` et `radio` la sortie ne contient
+jamais de piste vidéo — une vidéo n'y est acceptée que comme conteneur dont on extrait
+l'audio (`-vn`) ; sous `sparks` la piste vidéo est encodée. **Une source sans piste audio
+reste un échec métier sur les trois profils.**
 _Avoid_: Transcoding, Job, Conversion, Task
 
 **Source**:
@@ -53,15 +60,26 @@ Idempotente **sur l'effet** : deux reprises laissent le même état, la seconde 
 _Avoid_: Purge, Nettoyage, Cleanup, Annulation
 
 **Rendu (rendition)**:
-Une des variantes de qualité d'un HLS output. Ladder fixe à 3 rendus AAC-LC :
-`low` 64 kbps, `mid` 128 kbps, `high` 192 kbps. 64 kbps est le plancher (en-dessous
-la louange musicale se dégrade). Un `master.m3u8` liste les 3 ; le lecteur choisit
-selon la bande passante (ABR).
-_Avoid_: Variant, Quality (seul), Bitrate (seul)
+Une des variantes de débit d'un HLS output. L'échelle est **fixée par le Profil**, jamais
+par la requête : `teaching` en a 3 (AAC-LC `low` 64, `mid` 128, `high` 192 kbps — 64 est le
+plancher, en dessous la louange musicale se dégrade), `sparks` en a 2 (`low` et `high`,
+vidéo comprise). Un `master.m3u8` les liste ; le lecteur choisit selon la bande passante
+(ABR). **Le nombre de rendus et la durée de Segment sont deux réglages indépendants** : le
+premier protège les réseaux faibles, le second fixe le démarrage.
+_Avoid_: Variant, Quality (seul), Bitrate (seul), Qualité (elle décrit le contenu du
+fichier, pas le régime qui l'a produit)
+
+**Segment**:
+Un morceau du HLS output, et le **grain du démarrage** : un lecteur ne produit rien avant
+d'en avoir un entier. Sa durée est une **propriété du Profil** — 6 s sous `teaching`, 5 s
+sous `sparks`, aucune sous `radio` qui ne segmente pas. Sur une sortie vidéo, un segment
+n'est décodable seul que si une **image-clé** tombe sur sa frontière : sans cela le lecteur
+remonte au segment précédent et le démarrage rapide disparaît (ADR-0011).
+_Avoid_: Chunk, Tranche, Morceau
 
 **HLS output**:
-La playlist `master.m3u8`, les playlists de rendu et les segments `.ts` audio produits
-pour un Transcode. **Servi depuis RustFS** via Caddy (RustFS est l'origine de diffusion,
+La playlist `master.m3u8`, les playlists de rendu et les Segments `.ts` produits
+pour un Transcode — audio seul sous `teaching`, audio et vidéo sous `sparks`. **Servi depuis RustFS** via Caddy (RustFS est l'origine de diffusion,
 pas seulement une archive). La copie locale n'est qu'un **staging transitoire** : elle est
 supprimée une fois le HLS poussé dans RustFS, pour que le disque applicatif reste borné.
 _Avoid_: Stream, Rendus, Playlist (seul)
@@ -73,9 +91,17 @@ HLS output à 3 rendus, 3 Rendus progressifs, Archive audio sur le chemin par up
 `radio` produit une seule **Piste radio** — ni HLS, ni rendus progressifs, ni archive ;
 `outputPlaylist` y reste `null` à `COMPLETED`, et ce n'est pas une anomalie : c'est le
 profil qui dit dans quel champ la sortie se lit.
+`sparks` produit un HLS output **court** : 2 Rendus, Segments de 5 s, images-clés sur
+leurs frontières, **piste vidéo encodée** quand la source en porte une, et la même
+normalisation que `radio`. Sa sortie vit sous le préfixe `hls/` comme celle d'un
+enseignement — `outputPlaylist` y est donc rempli — et le champ **Média de Spark** porte ce
+qu'une playlist ne sait pas dire (ADR-0011).
 Le profil décide de **ce qui est encodé et publié**, jamais du cycle de vie : mêmes
 états, même progression, même point de reprise, même webhook, même Reprise (ADR-0010).
-_Avoid_: Mode, Type, Preset, Régime (réservé au chemin d'ingestion dans les journaux)
+Il est aussi le seul à décider de la durée d'un Segment, de l'échelle de Rendus et du sort
+de la piste vidéo.
+_Avoid_: Mode, Type, Preset, Qualité, Régime (réservé au chemin d'ingestion dans les
+journaux), « profil » tout court dans un propos adressé à un utilisateur
 
 **Piste radio**:
 La sortie unique du Profil `radio` : un fichier **AAC-LC 128 kbps, 48 kHz, normalisé en
@@ -88,6 +114,31 @@ homogène est l'objet de ce profil : sans lui, chaque enchaînement s'entend. Pu
 le champ `radioTrack` par les **trois canaux** (poll, SSE, webhook) et **seulement à
 `COMPLETED`** : la ligne la porte plus tôt que les octets ne sont servables.
 _Avoid_: Titre, Morceau, Rendu radio, Flux
+
+**Média de Spark (`sparkMedia`)**:
+Ce que le Profil `sparks` publie **en plus** de `outputPlaylist` : l'URL de la playlist
+(redite, pour qu'un lecteur de ce champ n'ait pas à chercher ailleurs), la **Vignette**, le
+drapeau `hasVideo`, la durée, la **Forme d'onde**, le niveau mesuré et les étiquettes de la
+source. Servi par les **trois canaux** (poll, SSE, webhook) et **seulement à `COMPLETED`**,
+comme la Piste radio — la ligne le porte plus tôt que les octets ne sont servables.
+**Absent**, et non `null`, hors de ce profil.
+_Avoid_: Annonce, Spark (seul — ce service ne connaît pas les annonces), Métadonnées
+
+**Forme d'onde (waveform)**:
+Trente-six hauteurs entières de 0 à 100, relevées **pendant la passe d'analyse** de
+`loudnorm` — la seule lecture où les échantillons sont sous la main. Échelle en décibels
+sous la barre la plus forte, plancher à -48 dB, efficace et non crête. Elle existe parce
+que le repli du client (un hachage déterministe du texte) **dessine des collines sur un
+silence**, et qu'une forme d'onde fausse est pire qu'une absence.
+_Avoid_: Spectre, Enveloppe, Peaks
+
+**Vignette (poster)**:
+L'image extraite de la piste vidéo d'un Spark quand aucune n'a été déposée, prélevée au
+quart de la durée (plafonnée à 3 s) pour éviter le noir du début. Elle vit **dans** le
+dossier HLS (`hls/<id>/poster.jpg`), donc elle part et s'efface avec lui. `null` quand le
+Spark est purement sonore, et `null` aussi quand l'extraction échoue : un Spark n'est pas
+refusé pour une image manquante.
+_Avoid_: Thumbnail, Miniature, Affiche (réservé à l'image déposée par l'auteur, côté portail)
 
 **Canal temps réel (SSE)**:
 Le flux Server-Sent-Events sur lequel un client suit un Transcode en direct, un canal

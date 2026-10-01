@@ -21,12 +21,17 @@ export type SourceKind = 'audio' | 'video'
  * - `radio` — un fichier unique, à un seul débit, **normalisé en niveau**, que
  *   liquidsoap lit d'un bout à l'autre. Ni HLS (segmenter une chanson de trois
  *   minutes n'apporte rien) ni archive FLAC (le master reste chez l'appelant).
+ * - `sparks` — un jeu HLS court à **deux rendus**, segments de **5 s**, images-clés
+ *   alignées sur les frontières de segment, **piste vidéo encodée** quand il y en
+ *   a une, et le même `loudnorm` en deux passes que la radio. C'est le premier
+ *   profil de ce service qui ne jette pas la vidéo : voir l'ADR-0011 et
+ *   l'amendement de l'ADR-0001.
  *
  * C'est un **profil**, pas un état : il est choisi au dépôt et ne change jamais
- * ensuite. Un même fichier redéposé sous l'autre profil est un autre Transcode,
+ * ensuite. Un même fichier redéposé sous un autre profil est un autre Transcode,
  * avec son propre identifiant et ses propres octets.
  */
-export type TranscodeProfile = 'teaching' | 'radio'
+export type TranscodeProfile = 'teaching' | 'radio' | 'sparks'
 
 /**
  * Le profil d'une requête qui n'en demande pas.
@@ -38,4 +43,4 @@ export type TranscodeProfile = 'teaching' | 'radio'
 export const DEFAULT_PROFILE: TranscodeProfile = 'teaching'
 
 /** Les profils acceptés par la validation d'une requête d'ingestion. */
-export const TRANSCODE_PROFILES: readonly TranscodeProfile[] = ['teaching', 'radio']
+export const TRANSCODE_PROFILES: readonly TranscodeProfile[] = ['teaching', 'radio', 'sparks']

@@ -51,6 +51,7 @@ export class TranscodePublisher {
       // et l'événement se contente de relayer ce qu'elles ont laissé passer. Les
       // réécrire ici ferait deux jumelles qui finiraient par différer.
       ...(payload.radioTrack ? { radioTrack: payload.radioTrack } : {}),
+      ...(payload.sparkMedia ? { sparkMedia: payload.sparkMedia } : {}),
     })
   }
 }

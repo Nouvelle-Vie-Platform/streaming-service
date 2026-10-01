@@ -31,7 +31,10 @@ test.group('profil de transcodage (issue #46)', () => {
     assert.equal(DEFAULT_PROFILE, 'teaching')
     assert.include(TRANSCODE_PROFILES, 'teaching')
     assert.include(TRANSCODE_PROFILES, 'radio')
-    assert.lengthOf(TRANSCODE_PROFILES, 2)
+    // Le compte bouge quand un profil naît, et c'est voulu : un profil qui
+    // s'ajoute sans passer par ici est un profil que la validation refuse.
+    // `sparks` est arrivé par l'issue #49.
+    assert.lengthOf(TRANSCODE_PROFILES, 3)
   })
 })
 

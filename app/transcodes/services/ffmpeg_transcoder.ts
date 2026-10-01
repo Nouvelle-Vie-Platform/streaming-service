@@ -1,7 +1,9 @@
 import {
   RENDITIONS,
-  HLS_SEGMENT_SECONDS,
-  RADIO_LOUDNESS,
+  PROFILE_SEGMENT_SECONDS,
+  LOUDNESS_TARGET,
+  SPARKS_AUDIO_RENDITIONS,
+  SPARKS_RENDITIONS,
   hlsOutputDir,
   archivePath,
   downloadOutputDir,
@@ -11,12 +13,18 @@ import {
   radioOutputArgs,
   radioOutputDir,
   radioTrackPath,
+  sparksAnalysisArgs,
+  sparksOutputArgs,
+  sparksPosterArgs,
+  sparksPosterPath,
 } from '#transcodes/support/hls'
-import type { LoudnessMeasurement, RadioLoudness } from '#transcodes/support/hls'
+import type { LoudnessMeasurement, LoudnessReport, RadioLoudness } from '#transcodes/support/hls'
 import { NO_TAGS, readTags } from '#transcodes/support/media_tags'
 import type { MediaTags } from '#transcodes/support/media_tags'
+import { waveformFromPcm } from '#transcodes/support/waveform'
 import { execFile, spawn } from 'node:child_process'
-import { mkdir, stat } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdir, rm, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -27,6 +35,17 @@ export interface ProbeResult {
   durationSeconds: number | null
   /** Whether the container carries at least one decodable audio track. */
   hasAudio: boolean
+  /**
+   * Si le conteneur porte une **vraie** piste vidéo (issue #49).
+   *
+   * ⚠️ **Une pochette n'est pas une vidéo.** Un MP3 ou un FLAC avec jaquette
+   * embarquée expose un flux `video` (mjpeg/png) que ffprobe annonce comme les
+   * autres. L'encoder produirait un Spark « vidéo » d'une seule image fixe, avec
+   * un poster, un débit vidéo et un barreau de plus — pour une pochette. Le
+   * drapeau `attached_pic` de la disposition les sépare, et il est demandé dans
+   * le même appel.
+   */
+  hasVideo: boolean
   /**
    * Le débit du conteneur en bits par seconde, ou `null` quand la sonde n'en
    * annonce pas (un flux sans en-tête de débit rend `N/A`).
@@ -105,6 +124,42 @@ function parseLoudnormReport(stderr: string): Record<string, string> | null {
 function reportNumber(report: Record<string, string>, key: string): number | null {
   const value = Number(report[key])
   return Number.isFinite(value) ? value : null
+}
+
+/**
+ * Ce que la passe d'analyse d'un Spark a tiré de sa **seule** lecture (issue #49).
+ *
+ * Les deux champs sont nullables **séparément** : ils ne viennent pas de la même
+ * branche du graphe de filtres, et l'un peut manquer sans l'autre.
+ */
+export interface SparksAnalysis {
+  /** La mesure à repasser à `loudnorm`, ou `null` si elle n'est pas exploitable. */
+  measured: LoudnessMeasurement | null
+  /** Trente-six hauteurs de 0 à 100, ou `null` faute d'échantillons. */
+  waveform: number[] | null
+}
+
+/**
+ * Les cinq nombres de la passe d'analyse, ou `null` dès qu'il en manque un.
+ *
+ * Tout ou rien : `loudnorm` refuse une mesure partielle, et lui en passer une
+ * incomplète le ferait retomber en mode dynamique **sans le dire** — on croirait
+ * appliquer un gain constant.
+ */
+function parseMeasurement(report: Record<string, string> | null): LoudnessMeasurement | null {
+  if (!report) return null
+
+  const i = reportNumber(report, 'input_i')
+  const tp = reportNumber(report, 'input_tp')
+  const lra = reportNumber(report, 'input_lra')
+  const thresh = reportNumber(report, 'input_thresh')
+  const targetOffset = reportNumber(report, 'target_offset')
+
+  if (i === null || tp === null || lra === null || thresh === null || targetOffset === null) {
+    return null
+  }
+
+  return { i, tp, lra, thresh, targetOffset }
 }
 
 /**
@@ -191,25 +246,35 @@ export class FfmpegTranscoder {
       '-v',
       'error',
       '-show_entries',
-      'format=duration,bit_rate:format_tags:stream=codec_type:stream_tags',
+      'format=duration,bit_rate:format_tags:stream=codec_type:stream_tags:stream_disposition=attached_pic',
       '-of',
       'json',
       sourcePath,
     ])
 
     const data = JSON.parse(stdout) as {
-      streams?: { codec_type?: string; tags?: Record<string, string> }[]
+      streams?: {
+        codec_type?: string
+        tags?: Record<string, string>
+        disposition?: { attached_pic?: number }
+      }[]
       format?: { duration?: string; bit_rate?: string; tags?: Record<string, string> }
     }
 
     const streams = data.streams ?? []
     const audio = streams.find((stream) => stream.codec_type === 'audio')
     const hasAudio = audio !== undefined
+    // Une jaquette embarquée est un flux vidéo au sens de ffprobe, et un
+    // diaporama d'une image au sens de l'encodeur : `attached_pic` l'écarte.
+    const hasVideo = streams.some(
+      (stream) => stream.codec_type === 'video' && stream.disposition?.attached_pic !== 1
+    )
     const duration = data.format?.duration ? Number(data.format.duration) : Number.NaN
     const bitrate = data.format?.bit_rate ? Number(data.format.bit_rate) : Number.NaN
 
     return {
       hasAudio,
+      hasVideo,
       durationSeconds: Number.isFinite(duration) ? duration : null,
       bitrate: Number.isFinite(bitrate) ? bitrate : null,
       // Une source sans piste audio n'a pas d'étiquettes à proposer : le job va
@@ -276,20 +341,7 @@ export class FfmpegTranscoder {
    */
   async measureLoudness(source: string): Promise<LoudnessMeasurement | null> {
     const stderr = await this.#run(radioAnalysisArgs(source), { label: 'analyse' })
-    const report = parseLoudnormReport(stderr)
-    if (!report) return null
-
-    const i = reportNumber(report, 'input_i')
-    const tp = reportNumber(report, 'input_tp')
-    const lra = reportNumber(report, 'input_lra')
-    const thresh = reportNumber(report, 'input_thresh')
-    const targetOffset = reportNumber(report, 'target_offset')
-
-    if (i === null || tp === null || lra === null || thresh === null || targetOffset === null) {
-      return null
-    }
-
-    return { i, tp, lra, thresh, targetOffset }
+    return parseMeasurement(parseLoudnormReport(stderr))
   }
 
   /**
@@ -350,7 +402,7 @@ export class FfmpegTranscoder {
   }
 
   /** Le rapport de `loudnorm` en niveau publiable, ou `null` s'il est muet. */
-  #loudness(report: Record<string, string>): RadioLoudness | null {
+  #loudness(report: Record<string, string>): LoudnessReport | null {
     const inputI = reportNumber(report, 'input_i')
     const outputI = reportNumber(report, 'output_i')
     // Sans la loudness d'entrée et celle de sortie, il n'y a pas de mesure :
@@ -358,7 +410,7 @@ export class FfmpegTranscoder {
     if (inputI === null || outputI === null) return null
 
     return {
-      targetI: RADIO_LOUDNESS.targetI,
+      targetI: LOUDNESS_TARGET.targetI,
       inputI,
       inputTp: reportNumber(report, 'input_tp') ?? 0,
       inputLra: reportNumber(report, 'input_lra') ?? 0,
@@ -367,6 +419,125 @@ export class FfmpegTranscoder {
       outputLra: reportNumber(report, 'output_lra') ?? 0,
       normalization: report.normalization_type ?? 'unknown',
     }
+  }
+
+  /**
+   * **Passe 1 sur 2 d'un Spark** (issue #49) : la mesure de niveau **et** la forme
+   * d'onde, d'une seule lecture.
+   *
+   * C'est l'argument qui a fait accepter le second décodage pour la radio, étendu
+   * d'un cran : la passe traverse déjà tout le fichier pour mesurer, donc prélever
+   * trente-six hauteurs au passage ne coûte qu'un second flux de PCM réduit à
+   * 1 kHz sur un tuyau — 2 Ko par seconde de média. Les relire plus tard aurait
+   * demandé un décodage complet de plus.
+   *
+   * Les deux sous-produits sont **indépendants** : une mesure illisible (une
+   * source silencieuse imprime `-inf`) ne doit pas emporter la forme d'onde, et
+   * une forme d'onde trop courte ne doit pas empêcher la normalisation. Chacun
+   * rend `null` pour son propre compte.
+   */
+  async analyseSparks(source: string): Promise<SparksAnalysis> {
+    const { stderr, stdout } = await this.#runCapturing(sparksAnalysisArgs(source))
+    return {
+      measured: parseMeasurement(parseLoudnormReport(stderr)),
+      waveform: waveformFromPcm(stdout),
+    }
+  }
+
+  /**
+   * **Passe 2 sur 2 d'un Spark** : le jeu HLS à deux rendus, segments de 5 s,
+   * images-clés sur les frontières, audio normalisé avec la mesure de
+   * {@link analyseSparks}.
+   *
+   * [hasVideo] vient de la sonde et non d'une extension : un Spark porte « au plus
+   * un média temporel », donc l'audio seul est un cas normal, pas une dégradation.
+   * Sans piste vidéo le graphe perd sa branche d'image et l'échelle devient
+   * l'échelle audio — deux rendus dans les deux cas.
+   *
+   * `onProgress` reçoit un pourcentage entier (0-99) comme les autres passes ; il
+   * n'est pas appelé quand la durée est inconnue.
+   *
+   * Rend le **niveau du fichier produit** : `loudnorm` l'imprime à la fin de la
+   * passe qui l'écrit, donc sans un décodage de plus. C'est aussi là que se lit
+   * `normalization`, le seul endroit où l'on apprend qu'un Spark a été comprimé —
+   * voir {@link SparkMedia.loudness}.
+   */
+  async encodeSparks(
+    source: string,
+    id: string,
+    measured: LoudnessMeasurement | null,
+    hasVideo: boolean,
+    durationSeconds: number | null,
+    onProgress: (percent: number) => void
+  ): Promise<LoudnessReport | null> {
+    const outDir = hlsOutputDir(id)
+    const ladder = hasVideo ? SPARKS_RENDITIONS : SPARKS_AUDIO_RENDITIONS
+    // Le muxeur HLS écrit dans `<outDir>/<nom>/` mais ne crée pas ces dossiers.
+    for (const rendition of ladder) {
+      await mkdir(join(outDir, rendition.name), { recursive: true })
+    }
+
+    const stderr = await this.#run(
+      [
+        '-hide_banner',
+        '-y',
+        '-i',
+        source,
+        '-progress',
+        'pipe:1',
+        '-nostats',
+        ...sparksOutputArgs(id, measured, hasVideo),
+      ],
+      { label: 'sparks', durationSeconds, onProgress }
+    )
+
+    const report = parseLoudnormReport(stderr)
+    return report ? this.#loudness(report) : null
+  }
+
+  /**
+   * La **vignette** d'un Spark vidéo, écrite dans le dossier HLS pour partir avec
+   * lui (issue #49). Rend `true` quand une image a été produite.
+   *
+   * ## Où prélever, et pourquoi pas à zéro
+   *
+   * Une vidéo de téléphone commence presque toujours par du noir, un mouvement de
+   * main ou un doigt sur l'objectif. On prélève donc **au quart**, plafonné à trois
+   * secondes — assez loin du début pour avoir une image, assez près pour que ce
+   * soit encore le sujet. Sur une source dont la durée est inconnue, zéro est le
+   * seul instant qu'on sache atteindre.
+   *
+   * ## Pourquoi un échec ici ne fait pas échouer le Spark
+   *
+   * Le document de rendu du mobile exige un poster sur tout statut vidéo, et c'est
+   * la raison d'être de cette extraction. Mais refuser un Spark parce que sa
+   * vignette n'a pas pu être tirée échangerait un carré noir contre **rien du
+   * tout** — et le champ `poster` à `null` dit exactement ce qui s'est passé, là
+   * où un `FAILED` ne dirait pas que le média, lui, était bon. On retente donc à
+   * zéro, puis on publie `null`.
+   */
+  async extractPoster(
+    source: string,
+    id: string,
+    durationSeconds: number | null
+  ): Promise<boolean> {
+    const target = sparksPosterPath(id)
+    await mkdir(dirname(target), { recursive: true })
+    // Un reste d'une tentative précédente ferait croire au succès de celle-ci.
+    await rm(target, { force: true })
+
+    const at = durationSeconds ? Math.min(durationSeconds / 4, 3) : 0
+    for (const seek of at > 0 ? [at, 0] : [0]) {
+      try {
+        await this.#run(sparksPosterArgs(source, id, seek), { label: 'poster' })
+      } catch {
+        // Une image qu'on n'a pas su tirer n'est pas une panne du Spark.
+        continue
+      }
+      if (existsSync(target)) return true
+    }
+
+    return false
   }
 
   /**
@@ -428,6 +599,39 @@ export class FfmpegTranscoder {
           const tail = stderr.slice(-2000)
           reject(new Error(`ffmpeg (${options.label}) exited with code ${code}: ${tail}`))
         }
+      })
+    })
+  }
+
+  /**
+   * Lance ffmpeg et rend **les deux sorties** : l'erreur standard en texte (où
+   * `loudnorm` imprime son rapport) et la sortie standard en **octets**.
+   *
+   * Séparé de {@link #run} parce que les deux ne lisent pas `stdout` de la même
+   * façon : là-bas c'est un flux de lignes `-progress` qu'on décode en texte, ici
+   * c'est du PCM brut qu'un `toString()` détruirait silencieusement — les octets
+   * invalides en UTF-8 deviennent U+FFFD, et la forme d'onde sortirait plate sans
+   * que rien ne le signale.
+   */
+  async #runCapturing(args: string[]): Promise<{ stderr: string; stdout: Buffer }> {
+    return new Promise((resolve, reject) => {
+      const proc = spawn('ffmpeg', args)
+
+      let stderr = ''
+      proc.stderr.on('data', (chunk) => {
+        stderr = (stderr + chunk.toString()).slice(-16_000)
+      })
+
+      const chunks: Buffer[] = []
+      proc.stdout.on('data', (chunk: Buffer) => chunks.push(chunk))
+
+      proc.on('error', reject)
+      proc.on('close', (code) => {
+        if (code === 0) resolve({ stderr, stdout: Buffer.concat(chunks) })
+        else
+          reject(
+            new Error(`ffmpeg (analyse sparks) exited with code ${code}: ${stderr.slice(-2000)}`)
+          )
       })
     })
   }
@@ -584,7 +788,7 @@ export class FfmpegTranscoder {
       '-f',
       'hls',
       '-hls_time',
-      String(HLS_SEGMENT_SECONDS),
+      String(PROFILE_SEGMENT_SECONDS.teaching),
       '-hls_playlist_type',
       'vod',
       '-hls_flags',

@@ -19,8 +19,10 @@ import {
   radioOutputDir,
   radioTrackPath,
   radioTrackUrl,
+  sparksPosterPath,
+  sparksPosterUrl,
 } from '#transcodes/support/hls'
-import type { DownloadRenditionInfo, RadioTrackInfo } from '#transcodes/support/hls'
+import type { DownloadRenditionInfo, RadioTrackInfo, SparkMedia } from '#transcodes/support/hls'
 import { NO_TAGS } from '#transcodes/support/media_tags'
 import { DEFAULT_PROFILE } from '#transcodes/support/transcode_enums'
 import type { TranscodeProfile } from '#transcodes/support/transcode_enums'
@@ -55,6 +57,12 @@ export interface ProcessTranscodeResult {
   outputPlaylist: string | null
   downloads: DownloadRenditionInfo[]
   radioTrack?: RadioTrackInfo
+  /**
+   * Sur le profil `sparks`, `outputPlaylist` est bien rempli — c'est un vrai jeu
+   * HLS — et `sparkMedia` porte ce que la playlist ne sait pas dire : la vignette,
+   * la forme d'onde, le niveau et les étiquettes.
+   */
+  sparkMedia?: SparkMedia
 }
 
 /**
@@ -101,6 +109,7 @@ export class ProcessTranscode {
     const transcode = await Transcode.findOrFail(params.id)
     const profile = params.profile ?? DEFAULT_PROFILE
     const radio = profile === 'radio'
+    const sparks = profile === 'sparks'
 
     // Quatre étapes de natures très différentes — une sonde, un encodage, deux
     // envois réseau qui font un aller-retour **par fichier** — et rien ne disait
@@ -111,6 +120,9 @@ export class ProcessTranscode {
     // Ce que la ligne sait déjà : sur une reprise, le niveau et les étiquettes
     // n'y sont pas par hasard (voir plus bas pourquoi ils sont écrits tôt).
     let radioTrack: RadioTrackInfo | null = transcode.radioTrack ?? null
+    // Idem pour un Spark : le niveau, la forme d'onde et les étiquettes ont été
+    // posés sur la ligne avant l'envoi, précisément pour survivre à une reprise.
+    let sparkMedia: SparkMedia | null = transcode.sparkMedia ?? null
 
     // **Le point de reprise interroge le fichier que la passe écrit en dernier** :
     // `master.m3u8` pour un enseignement, la piste pour une radio. Un profil qui
@@ -230,6 +242,66 @@ export class ProcessTranscode {
            */
           transcode.radioTrack = radioTrack
           await transcode.save()
+        } else if (sparks) {
+          /*
+           * **Le même double décodage que la radio, pour la même raison**, et un
+           * sous-produit de plus : la passe d'analyse rend la mesure de niveau
+           * *et* la forme d'onde, d'une seule lecture (voir
+           * `FfmpegTranscoder.analyseSparks`). La durée et les étiquettes, elles,
+           * sortent de l'en-tête du conteneur sans décoder un échantillon.
+           */
+          const analysis = await timings.time('analyseLoudness', () =>
+            this.transcoder.analyseSparks(input)
+          )
+          const loudness = await timings.time('encode', () =>
+            this.transcoder.encodeSparks(
+              input,
+              params.id,
+              analysis.measured,
+              probe.hasVideo,
+              probe.durationSeconds,
+              onProgress
+            )
+          )
+
+          /*
+           * La vignette est tirée **après** l'encodage et **avant** l'envoi, parce
+           * qu'elle part dans le dossier HLS : écrite plus tard, elle aurait raté
+           * le `uploadDirectory` et il aurait fallu un second envoi, une seconde
+           * clé, une seconde chance de se tromper.
+           *
+           * Elle n'est tirée que s'il y a une image : un Spark sonore n'a pas de
+           * poster, et `null` dit cela mieux qu'un carré noir.
+           */
+          const poster = probe.hasVideo
+            ? await timings.time('poster', () =>
+                this.transcoder.extractPoster(input, params.id, probe.durationSeconds)
+              )
+            : false
+
+          sparkMedia = {
+            playlist: outputPlaylistUrl(params.id),
+            poster: poster ? sparksPosterUrl(params.id) : null,
+            hasVideo: probe.hasVideo,
+            durationSeconds: probe.durationSeconds,
+            waveform: analysis.waveform,
+            loudness,
+            // Les étiquettes viennent de la **source**, comme pour la radio.
+            tags: probe.tags,
+          }
+
+          /*
+           * ⚠️ **Persisté avant l'envoi**, exactement pour la raison de
+           * `radio_track` : le niveau de sortie n'existe que dans la sortie
+           * d'erreur de ffmpeg, la forme d'onde que dans le tuyau de la passe
+           * d'analyse, et les étiquettes que sur une source que le `finally`
+           * rend juste en dessous. Un hoquet de RustFS ici, et la tentative
+           * suivante trouverait le `master.m3u8` sur le disque, sauterait
+           * l'encodage — ce qu'on veut — et publierait un Spark sans forme d'onde
+           * ni niveau.
+           */
+          transcode.sparkMedia = sparkMedia
+          await transcode.save()
         } else {
           const result = await timings.time('encode', () =>
             this.transcoder.encode(input, params.id, probe.durationSeconds, onProgress)
@@ -257,6 +329,27 @@ export class ProcessTranscode {
         loudness: radioTrack?.loudness ?? null,
         tags: radioTrack?.tags ?? NO_TAGS,
       }
+    } else if (sparks) {
+      /*
+       * Reprise après point de reprise, profil `sparks` : **tout se relit sur la
+       * ligne**, rien sur le disque.
+       *
+       * Il n'y a aucune taille à remesurer — un jeu HLS est un arbre, pas un
+       * fichier — et les trois sous-produits de la passe d'analyse ne se
+       * retrouvent nulle part ailleurs. C'est pourquoi ils y ont été posés avant
+       * l'envoi. Si la ligne ne les porte pas (une reprise qui traverse une
+       * version antérieure), on republie au moins ce qui est déterministe : la
+       * playlist et la vignette, qui se déduisent de l'identifiant.
+       */
+      sparkMedia = sparkMedia ?? {
+        playlist: outputPlaylistUrl(params.id),
+        poster: existsSync(sparksPosterPath(params.id)) ? sparksPosterUrl(params.id) : null,
+        hasVideo: transcode.sourceKind === 'video',
+        durationSeconds: transcode.durationSeconds ?? null,
+        waveform: null,
+        loudness: null,
+        tags: NO_TAGS,
+      }
     } else {
       // Checkpoint retry: the pass already staged the `.aac` alongside the HLS —
       // recover their sizes without re-encoding (ADR-0009).
@@ -276,12 +369,19 @@ export class ProcessTranscode {
         this.rustfs.uploadDirectory(radioOutputDir(params.id), radioKeyPrefix(params.id))
       )
     } else {
+      // Un Spark passe par ici aussi : son jeu HLS vit sous le **même** préfixe
+      // public que celui d'un enseignement, et sa vignette voyage dedans. C'est ce
+      // qui lui épargne un bloc Caddy, une politique de préfixe et une branche de
+      // reprise — trois endroits où un oubli rend 403 ou 404 sans dire pourquoi.
       await timings.count('uploadHls', () =>
         this.rustfs.uploadDirectory(hlsOutputDir(params.id), hlsKeyPrefix(params.id))
       )
-      await timings.count('uploadDownloads', () =>
-        this.rustfs.uploadDirectory(downloadOutputDir(params.id), downloadKeyPrefix(params.id))
-      )
+      // Les rendus progressifs n'existent que sur le régime historique (ADR-0009).
+      if (!sparks) {
+        await timings.count('uploadDownloads', () =>
+          this.rustfs.uploadDirectory(downloadOutputDir(params.id), downloadKeyPrefix(params.id))
+        )
+      }
     }
 
     // Pair each measured byte size with its absolute public URL — the single
@@ -295,8 +395,15 @@ export class ProcessTranscode {
     transcode.status = 'COMPLETED'
     if (!radio) {
       transcode.outputPlaylist = outputPlaylistUrl(params.id)
+    }
+    if (profile === 'teaching') {
       // Persist the download renditions alongside the playlist so the row is
       // self-describing — the client (#187) gets URLs + sizes without a HEAD.
+      //
+      // ⚠️ Seulement sur le régime historique : un Spark n'a pas de rendus
+      // progressifs, et lui écrire un tableau vide ferait dire à la colonne « on a
+      // cherché et il n'y en a pas » là où la vérité est « ce profil n'en produit
+      // pas ». La nuance se paie à la lecture, pas à l'écriture.
       transcode.downloads = renditions
     }
     // Sur le profil radio, `output_playlist` reste `null` : **il n'y a pas de
@@ -329,6 +436,7 @@ export class ProcessTranscode {
           // aujourd'hui ; un champ de plus, même vide, serait un changement de
           // contrat pour un consommateur qui n'a rien demandé.
           ...(radio && radioTrack ? { radioTrack } : {}),
+          ...(sparks && sparkMedia ? { sparkMedia } : {}),
         },
       })
     }
@@ -364,7 +472,7 @@ export class ProcessTranscode {
       // **Seulement quand ce n'est pas le régime historique.** La ligne des
       // enseignements est citée telle quelle dans le README ; lui ajouter un
       // champ obligerait à la réécrire pour un profil qu'elle ne décrit pas.
-      profile: radio ? profile : undefined,
+      profile: profile === DEFAULT_PROFILE ? undefined : profile,
     })
 
     // The download renditions are now on the public origin: hand the caller (#186)
@@ -374,6 +482,7 @@ export class ProcessTranscode {
       outputPlaylist: transcode.outputPlaylist ?? null,
       downloads: renditions,
       ...(radioTrack ? { radioTrack } : {}),
+      ...(sparkMedia ? { sparkMedia } : {}),
     }
   }
 }

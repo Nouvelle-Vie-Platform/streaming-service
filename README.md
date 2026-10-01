@@ -123,6 +123,48 @@ Sans niveau homogène, chaque enchaînement s'entend et l'auditeur corrige son v
 chaque titre ; c'est pourquoi la normalisation est faite **à l'ingestion**, une fois par
 titre, et non depuis la grille.
 
+#### Le profil `sparks` (ADR-0011)
+
+Une annonce filmée au téléphone n'a ni les besoins d'un sermon ni ceux d'un titre de
+l'antenne. Ce profil produit un jeu HLS **court** :
+
+```text
+hls/<id>/master.m3u8        ← 2 rendus, segments de 5 s
+hls/<id>/{low,high}/        ← index.m3u8 + seg_%03d.ts
+hls/<id>/poster.jpg         ← la vignette, extraite de la vidéo
+```
+
+| | `teaching` | `radio` | **`sparks`** |
+| --- | --- | --- | --- |
+| Sorties | 3 rendus HLS + master + 3 `.aac` | une piste `.m4a` | **2 rendus HLS + master** |
+| Segment | 6 s | — | **5 s** |
+| Vidéo | jetée (`-vn`) | jetée | **encodée**, images-clés sur les frontières |
+| Normalisation | aucune | `loudnorm` 2 passes, -16 LUFS / -1,5 dBTP | **la même** |
+| Sous-produits | — | niveau, étiquettes | **niveau, durée, forme d'onde, vignette** |
+
+⚠️ **C'est le premier profil qui n'est pas audio pur**, et il amende l'ADR-0001 — « ce
+service est audio » devient « ce service a un profil audio par défaut ». `teaching` et
+`radio` ne changent pas d'un octet.
+
+⚠️ **Les images-clés tombent sur les frontières de segment** (`-force_key_frames`). Sans
+cela x264 en pose une toutes les 250 images et les segments sortent à **8,33 s** sur un
+réglage de 5 — mesuré au banc, et rien ne le signale : la playlist est valide et la vidéo
+joue. Un segment qui ne commence pas par une image-clé ne se décode pas seul, et le
+démarrage rapide qu'on paie en segments courts disparaît.
+
+Deux rendus et non un : la durée de segment fixe le **démarrage**, le nombre de rendus
+protège les **réseaux faibles**. Deux molettes distinctes.
+
+La sortie vit sous le préfixe `hls/` **existant** : `outputPlaylist` est donc rempli, le
+bloc Caddy `/hls/*` et la politique de bucket suffisent tels quels, et `DELETE` efface la
+vignette avec le reste. Le champ [`sparkMedia`](#sparkmedia-sur-le-profil-sparks) porte ce
+qu'une playlist ne sait pas dire.
+
+Un Spark **sonore** est un cas normal (« au plus un média temporel, audio **ou** vidéo ») :
+deux rendus audio à 64/128 kbps, pas de vignette. La bascule est décidée par la sonde, qui
+écarte les **jaquettes embarquées** — un MP3 à pochette expose un flux vidéo qu'on aurait
+encodé en diaporama d'une image.
+
 ### `GET /transcodes/:id/status`
 
 Récupération ponctuelle. `200` avec le **contrat unifié** ci-dessous, `404`
@@ -215,6 +257,44 @@ RustFS » (ADR-0004).
 > ses dépôts depuis le snapshot quand un webhook s'est perdu ne trouverait, sans ce champ,
 > aucun endroit où relire l'URL, le niveau et les étiquettes : le webhook ne repart pas et
 > la passe ne sera pas rejouée.
+
+#### `sparkMedia` sur le profil `sparks`
+
+Même règle, même raison — **les trois canaux, et seulement à `COMPLETED`** —, mais sans le
+piège de `outputPlaylist` : un Spark produit un vrai jeu HLS, donc la playlist se lit où
+elle s'est toujours lue.
+
+```json
+{
+  "id": "01b2…",
+  "status": "COMPLETED",
+  "progress": 100,
+  "outputPlaylist": "https://media.example.com/hls/01b2…/master.m3u8",
+  "error": null,
+  "sparkMedia": {
+    "playlist": "https://media.example.com/hls/01b2…/master.m3u8",
+    "poster": "https://media.example.com/hls/01b2…/poster.jpg",
+    "hasVideo": true,
+    "durationSeconds": 28.4,
+    "waveform": [0, 0, 3, 41, 78, 92, 100, 87, "… 36 hauteurs de 0 à 100"],
+    "loudness": { "targetI": -16, "inputI": -23.01, "outputI": -15.71, "normalization": "linear" },
+    "tags": { "title": "…", "artist": null, "album": null }
+  }
+}
+```
+
+- **`playlist` redit `outputPlaylist` exprès** : un consommateur qui lit `sparkMedia` n'a pas
+  à savoir qu'une moitié de sa réponse est dans un autre champ.
+- **`poster` vaut `null`** quand le Spark est sonore — et aussi quand l'extraction a échoué.
+  Un Spark n'est pas refusé pour une image manquante.
+- **`waveform` vaut `null`** quand la source est trop courte pour trente-six barres. Un
+  fichier entièrement muet, lui, rend trente-six zéros : c'est une mesure, et elle est juste.
+- ⚠️ **`loudness.normalization` n'est pas un ornement.** `loudnorm` refuse le gain constant
+  dès que `TP − I ≤ 14,5 LU`, et c'est une **propriété de la source** : un Spark enregistré
+  au téléphone et non traité tombe souvent du mauvais côté. C'est le seul endroit où l'on
+  apprend qu'un média a été comprimé, et **la proportion de `dynamic` est le chiffre à
+  surveiller en production**.
+- Le champ est **absent**, et non `null`, hors de ce profil.
 
 Le **webhook** part de cette forme et l'**enrichit** (ADR-0009) : il ajoute la durée du média
 et, par rendu, l'URL de téléchargement `.aac` et sa taille en octets — que le consommateur
@@ -395,7 +475,7 @@ cache dans Redis pour un court TTL. `/upload`, `/transcodes/*` et le canal SSE s
 ## Prérequis
 
 - **Node 24**, **ffmpeg/ffprobe** (build complet).
-  > **ffmpeg ≥ 7 en production.** Sa passe écrit six sorties (trois rendus HLS, trois `.aac`) et
+  > **ffmpeg ≥ 7 en production.** La passe des enseignements écrit six sorties (trois rendus HLS, trois `.aac`) et
   > c'est la version 7.0 qui les encode **en parallèle**, un fil par sortie. Sous ffmpeg 5, elles
   > se suivaient : mesuré, 6,1× le temps réel contre 55× pour un encodage seul sur la **même**
   > machine. L'image part donc de `node:24-trixie-slim` (ffmpeg 7.1) et non de `bookworm` (5.1).
@@ -498,9 +578,11 @@ fichier. La compression est déclarée dans le seul bloc fourre-tout.
 ## Décisions & vocabulaire
 
 - **[`CONTEXT.md`](./CONTEXT.md)** — glossaire du domaine (Transcode, Source, Archive audio,
-  Rendu, HLS output, RustFS, canal SSE, webhook…).
+  Rendu, Segment, HLS output, Média de Spark, Forme d'onde, Vignette, RustFS, canal SSE,
+  webhook…).
 - **[`docs/adr/`](./docs/adr/)** — décisions structurantes :
-  - `0001` sortie audio-only
+  - `0001` sortie audio-only — **amendé le 2026-10-01** : la règle devient celle des
+    profils `teaching` et `radio`, et non plus celle du service (voir `0011`)
   - `0002` `id` généré serveur (UUID v7)
   - `0003` vérification de jeton déléguée
   - `0004` RustFS origine de diffusion + pipeline en 2 jobs
@@ -511,6 +593,8 @@ fichier. La compression est déclarée dans le seul bloc fourre-tout.
     détient le Transcode)
   - `0009` rendus progressifs `.aac` pour le téléchargement hors ligne
   - `0010` profil `radio` : une sortie unique, normalisée en niveau à l'ingestion
+  - `0011` profil `sparks` : deux rendus, segments de 5 s, images-clés sur leurs frontières,
+    et **la vidéo s'ouvre**
 
 ### Structure
 

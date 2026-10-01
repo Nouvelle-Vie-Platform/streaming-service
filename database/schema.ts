@@ -6,11 +6,11 @@
 
 import { BaseModel, column } from '@adonisjs/lucid/orm'
 import { DateTime } from 'luxon'
-import type { DownloadRenditionInfo, RadioTrackInfo } from '#transcodes/support/hls'
+import type { DownloadRenditionInfo, RadioTrackInfo, SparkMedia } from '#transcodes/support/hls'
 import type { TranscodeProfile, SourceKind, TranscodeStatus } from '#transcodes/support/transcode_enums'
 
 export class TranscodeSchema extends BaseModel {
-  static $columns = ['archiveKey', 'callbackSecret', 'callbackUrl', 'createdAt', 'downloads', 'durationSeconds', 'error', 'id', 'originalFilename', 'outputPlaylist', 'profile', 'radioTrack', 'sourceKind', 'sourceUrl', 'status', 'updatedAt'] as const
+  static $columns = ['archiveKey', 'callbackSecret', 'callbackUrl', 'createdAt', 'downloads', 'durationSeconds', 'error', 'id', 'originalFilename', 'outputPlaylist', 'profile', 'radioTrack', 'sourceKind', 'sourceUrl', 'sparkMedia', 'status', 'updatedAt'] as const
   $columns = TranscodeSchema.$columns
   @column()
   declare archiveKey: string | null
@@ -40,6 +40,8 @@ export class TranscodeSchema extends BaseModel {
   declare sourceKind: SourceKind
   @column()
   declare sourceUrl: string | null
+  @column()
+  declare sparkMedia: SparkMedia | null
   @column()
   declare status: TranscodeStatus
   @column.dateTime({ autoCreate: true, autoUpdate: true })

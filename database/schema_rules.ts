@@ -53,6 +53,15 @@ const radioTrackColumn = {
   decorators: [{ name: '@column' }],
 }
 
+// La sortie d'un Spark (issue #49), même discipline que `downloads` et
+// `radio_track` : un jsonb nu serait typé `any`, on le referme sur `SparkMedia`.
+// `prepare`/`consume` sont posés dans le modèle — ils ne s'expriment pas ici.
+const sparkMediaColumn = {
+  tsType: 'SparkMedia',
+  imports: [{ source: '#transcodes/support/hls', typeImports: ['SparkMedia'] }],
+  decorators: [{ name: '@column' }],
+}
+
 export default {
   tables: {
     transcodes: {
@@ -63,6 +72,7 @@ export default {
         downloads: downloadsColumn,
         profile: profileColumn,
         radio_track: radioTrackColumn,
+        spark_media: sparkMediaColumn,
       },
     },
   },
