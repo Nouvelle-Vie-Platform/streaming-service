@@ -552,7 +552,9 @@ FLAC (`archives/`) reste privée.
 
 ⚠️ **Jamais d'`encode` dans les blocs `/dl/*` et `/radio/*`** : compresser ces octets casse
 la reprise de téléchargement par plage (spike #184), et l'antenne se déplace dans le
-fichier. La compression est déclarée dans le seul bloc fourre-tout.
+fichier. La compression est déclarée dans le seul bloc fourre-tout. **Mesuré de l'extérieur
+le 2026-10-15** : `Accept-Encoding: gzip` sur un `.aac` de `/dl/` renvoie `206` sans
+`content-encoding`, là où `GET /` est bien compressé (ADR-0012).
 
 ---
 
@@ -595,6 +597,8 @@ fichier. La compression est déclarée dans le seul bloc fourre-tout.
   - `0010` profil `radio` : une sortie unique, normalisée en niveau à l'ingestion
   - `0011` profil `sparks` : deux rendus, segments de 5 s, images-clés sur leurs frontières,
     et **la vidéo s'ouvre**
+  - `0012` reprise par plage mesurée en production : Caddy est transparent, **RustFS ignore
+    `If-Range`** — amende le `0009`
 
 ### Structure
 
