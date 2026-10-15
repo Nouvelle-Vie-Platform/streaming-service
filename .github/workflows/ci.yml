@@ -15,6 +15,20 @@ jobs:
     name: lint · typecheck · test
     runs-on: ubuntu-24.04
 
+    # **Le job tourne dans un conteneur, et c'est ffmpeg qui le commande.** Sur l'hôte
+    # `ubuntu-24.04`, `apt` livre ffmpeg **6.1.1** ; l'image de production part de
+    # `node:24-trixie-slim`, soit **7.1.5**. Or `RUNBOOK.md` l'a mesuré : ffmpeg 7.0 a
+    # introduit l'ordonnanceur multi-fils (un fil par sortie) et il vaut un facteur **×4**
+    # sur la passe à six sorties. Le test d'encodage réel d'ADR-0009 s'exécutait donc sur
+    # une version quatre fois plus lente que la production — il mesurait autre chose qu'elle.
+    # L'image est la base de production en version non allégée : `git` (checkout) et `apt`
+    # (ffmpeg) y sont.
+    #
+    # Effet de bord bienvenu : dans le conteneur, les services se joignent par leur nom et
+    # ne publient plus rien. Un `127.0.0.1:5432` du job ne peut plus désigner que lui-même —
+    # et jamais le PostgreSQL d'une machine hôte.
+    container: node:24-trixie
+
     services:
       postgres:
         image: postgres:16-alpine
@@ -22,14 +36,12 @@ jobs:
           POSTGRES_USER: streaming
           POSTGRES_PASSWORD: streaming
           POSTGRES_DB: streaming_service_test
-        ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U streaming"
           --health-interval 5s --health-timeout 5s --health-retries 12
 
       redis:
         image: redis:7-alpine
-        ports: ['6379:6379']
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 3s --health-retries 12
@@ -42,14 +54,14 @@ jobs:
       APP_URL: http://localhost:3333
       LOG_LEVEL: info
       APP_KEY: ci_app_key_0000000000000000000000
-      # Postgres service
-      DB_HOST: 127.0.0.1
+      # Service `postgres` du job, joint par son nom
+      DB_HOST: postgres
       DB_PORT: 5432
       DB_USER: streaming
       DB_PASSWORD: streaming
       DB_DATABASE: streaming_service_test
-      # Redis service
-      REDIS_HOST: 127.0.0.1
+      # Service `redis` du job, joint par son nom
+      REDIS_HOST: redis
       REDIS_PORT: 6379
       # RustFS + auth are not reached by the test suite — dummy but valid values.
       RUSTFS_ENDPOINT: http://127.0.0.1:9000
@@ -69,8 +81,8 @@ jobs:
       # plus rien : on cesse de la lire, et la vraie régression passe avec.
       - name: Install ffmpeg
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          apt-get update
+          apt-get install -y --no-install-recommends ffmpeg
           ffmpeg -version | head -1
 
       - uses: actions/setup-node@v7
