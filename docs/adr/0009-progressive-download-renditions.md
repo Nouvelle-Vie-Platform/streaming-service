@@ -38,8 +38,10 @@ each OS player tolerating a truncated MP4. **ADTS** (`-f adts`) is frame-concate
 central index, so any prefix is valid audio and plays to wherever the bytes stop. The ffmpeg native
 AAC encoder is effectively **ABR** (`-b:a` targets an average via a bit reservoir; measured per-frame
 spread ≈30 % at 128 kbps), so without a container index seeking is estimated as `time × bitrate` —
-approximate (~1 % duration drift) but adequate, and players resync on ADTS frame sync words. It is
-**not** byte-exact CBR (true CBR only holds for the MP3 fallback). On Android, enable ExoPlayer's
+approximate (**jusqu'à +4,8 % de dérive mesurée** — voir l'amendement T1 en bas de page ; le
+« ~1 % » qui tenait ici était une estimation, pas une mesure), and players resync on ADTS frame
+sync words. It is **not** byte-exact CBR (true CBR only holds for the MP3 fallback). On Android,
+enable ExoPlayer's
 `FLAG_ENABLE_CONSTANT_BITRATE_SEEKING`. AAC over MP3 for efficiency at 64 kbps, which is the floor
 for worship audio (ADR-0001 rationale).
 
@@ -96,3 +98,47 @@ a 403.
   **ignores `If-Range`**, so the resume guard belongs to the client (compare the `ETag` carried by
   the `206`). If a CDN is ever added, it must forward the header, not compress `audio/aac`, and not
   cache-collapse ranges — and ADR-0012's protocol is the one to replay.
+
+## Amendement du 2026-10-15 — T1 (#53) : ce que la dérive de durée vaut vraiment
+
+La tranche T1 n'a rien eu à encoder de neuf : les trois `.aac` sortaient déjà de la passe HLS. Ce
+qu'elle a produit, c'est la **mesure** qui manquait sous la phrase « ~1 % de dérive » — et cette
+phrase était fausse.
+
+Banc : ffmpeg 9.0.1, bruit rose 44,1 kHz de **120,000 s**, encodé par le **vecteur d'arguments de
+`buildArgs`** (une passe, trois sorties HLS + trois sorties ADTS).
+
+| Rendu | `ffprobe format=duration` | Durée vraie (trames × 1024 / 44 100) | Écart |
+| --- | --- | --- | --- |
+| low 64k | 118,948 s | 120,024 s | **−0,90 %** |
+| mid 128k | 125,738 s | 120,024 s | **+4,78 %** |
+| high 192k | 121,737 s | 120,024 s | **+1,45 %** |
+
+Trois choses à en retenir :
+
+1. **La dérive n'est ni bornée par 1 %, ni monotone avec le débit** : le pire rendu est celui du
+   milieu. Un client qui dessinerait sa barre de lecture sur `format=duration` se tromperait de
+   près de six minutes sur un enseignement de deux heures — c'est tout le motif de faire voyager la
+   **durée réelle** dans le webhook (T2, #54).
+2. **La durée décodable, elle, est exacte** : les trois rendus portent 5 169 trames, soit 120,024 s
+   (+24 ms, le bourrage de dernière trame). Il y a donc bien une durée juste à publier, et
+   `tests/functional/download_renditions.spec.ts` la verrouille en comptant les trames
+   (`ffprobe -count_packets`) au lieu de lire l'estimation.
+3. **Le mécanisme de l'estimation n'est pas tranché.** L'hypothèse « ffprobe moyenne le début du
+   fichier » ne tient pas à la mesure : sur les 5 premières secondes le débit vaut 66 798 /
+   129 343 / 194 099 bps contre 66 698 / 130 678 / 194 769 bps sur le fichier entier — ±1 %, là où
+   l'estimation se trompe de 4,5 %. **Non vérifié**, et sans conséquence : la durée ne vient plus
+   de là.
+
+### Il n'y a pas de bouton CBR — mesuré, pas supposé
+
+- `ffmpeg -h encoder=aac` n'expose que `aac_coder`, `aac_ms`, `aac_is`, `aac_pns`, `aac_tns` et
+  `aac_pce` : **aucune option de débit constant, aucun réglage de réservoir de bits**.
+- Ré-encoder le même `mid` avec `-minrate 128k -maxrate 128k -bufsize 128k` rend un fichier
+  **identique à l'octet près** (1 960 559 octets), même dispersion de trames (291–487 octets), même
+  estimation (125,738 s) : l'encodeur natif **ignore** ces options.
+
+Rien à régler, donc, et rien qui rapprocherait honnêtement ces fichiers d'un CBR — on ne les
+appellera pas ainsi. (La dispersion 13–637 octets citée au spike venait d'une parole réelle avec
+ses silences ; sur du bruit rose, qui ne se tait jamais, elle tombe à 291–487. La dispersion dépend
+du contenu : c'est la définition même de l'ABR.)
