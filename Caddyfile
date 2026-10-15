@@ -39,7 +39,8 @@
 
 	# Progressive .aac download renditions (ADR-0009) — served from RustFS like
 	# the HLS. reverse_proxy is transparent to Range/ETag; do NOT add `encode`
-	# here: compressing these bytes would break byte-range resume (spike #184).
+	# here: compressing these bytes would break byte-range resume (spike #184,
+	# measured end to end in production — ADR-0012).
 	handle /dl/* {
 		header {
 			Access-Control-Allow-Origin *

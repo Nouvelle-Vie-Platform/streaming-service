@@ -51,6 +51,10 @@ stream.eenv.brainsial.com {
 	# octets casse la reprise de téléchargement par plage (spike #184). C'est la
 	# raison pour laquelle la compression est déclarée dans le seul bloc
 	# fourre-tout ci-dessous, et non en tête de site.
+	#
+	# Mesuré sur ce bloc, en production, le 2026-10-15 (ADR-0012) : `206`,
+	# `Content-Range`, `Accept-Ranges`, `416`, `ETag` stable, recollage
+	# `sha256`-identique, et aucun `content-encoding` même en demandant gzip.
 	# --------------------------------------------------------------------------
 	handle /dl/* {
 		header {

@@ -1,5 +1,15 @@
 # Progressive download renditions ride the HLS pipeline
 
+> **Amendement du 2026-10-15 — spike #184 mesuré en production, voir [ADR-0012](0012-reprise-par-plage-ce-que-l-origine-tient-vraiment.md).**
+> Le dernier point des conséquences ci-dessous énonçait deux risques restants : l'un n'existe pas,
+> l'autre s'est réalisé. **Il n'y a aucun CDN devant Caddy** (même enregistrement A pour les trois
+> hôtes, `via: 1.1 Caddy`, aucun en-tête de bord) : le risque « un CDN avale le `Range` » est sans
+> objet aujourd'hui. En revanche **RustFS ignore `If-Range`** — validateur fort comme date : il
+> renvoie `206` au lieu de `200` sur un validateur périmé, alors qu'il honore `If-None-Match`
+> (`304`) et `If-Match` (`412`). Le reste tient : `206`, `Content-Range`, `Accept-Ranges`, `416`,
+> `ETag` stable, et un recollage `sha256`-identique au fichier entier. La protection de la reprise
+> est donc **côté client** : comparer l'`ETag` que porte le `206`, pas armer `If-Range`.
+
 The service already produces three **HLS** renditions (64/128/192 kbps AAC-LC, ADR-0001) from a
 single `ffmpeg` pass. It will now emit, **from that same pass**, three **progressive** single-file
 renditions meant for **offline download** by the mobile client — one file per quality, same bitrate
@@ -80,7 +90,9 @@ a 403.
   `/dl/*` falls through to the app. A `handle /dl/*` block mirroring `/hls/*` is required, and the
   `dl/` prefix must be made anonymously readable in the bucket policy (`docker-compose.yml`
   `createbucket`) since the URLs are unsigned. Caddy's transparent `reverse_proxy` was verified to
-  preserve `Range`/`206`/`Content-Range`/`ETag`/`If-Range`/`416` and byte-exact resume; the remaining
-  risks are RustFS's own `If-Range` handling and any CDN in front (the most likely to swallow `Range`
-  — it must forward the header, not compress `audio/aac`, and not cache-collapse ranges).
-</content>
+  preserve `Range`/`206`/`Content-Range`/`ETag`/`416` and byte-exact resume — **measured end to end
+  in production on 2026-10-15 (ADR-0012)**, including the absence of `encode` on the `/dl/*` block.
+  The two risks this bullet used to list are settled: there is **no CDN** in front, and RustFS
+  **ignores `If-Range`**, so the resume guard belongs to the client (compare the `ETag` carried by
+  the `206`). If a CDN is ever added, it must forward the header, not compress `audio/aac`, and not
+  cache-collapse ranges — and ADR-0012's protocol is the one to replay.
