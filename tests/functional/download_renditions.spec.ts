@@ -38,6 +38,37 @@ async function probeField(path: string, entry: string): Promise<string> {
   return stdout.trim()
 }
 
+/**
+ * La **durée réellement décodable** d'un ADTS : les trames effectivement lues
+ * × 1024 échantillons, divisées par la fréquence d'échantillonnage.
+ *
+ * C'est la seule durée vraie de ces fichiers. `stream=duration` n'en est qu'une
+ * *estimation* — l'ADTS n'écrit sa durée nulle part et l'encodeur AAC de ffmpeg
+ * est ABR, donc l'estimation dérive avec le contenu (mesuré de −0,9 % à +4,8 %
+ * sur 120 s, amendement de l'ADR-0009). C'est la raison pour laquelle la durée
+ * publiée part du service (webhook, #54) et n'est jamais devinée côté client :
+ * ce test verrouille le fait qu'il y a bien, ici, une durée exacte à publier.
+ */
+async function decodedSeconds(path: string): Promise<number> {
+  const { stdout } = await execFileAsync('ffprobe', [
+    '-v',
+    'error',
+    '-select_streams',
+    'a:0',
+    '-count_packets',
+    '-show_entries',
+    'stream=sample_rate,nb_read_packets',
+    // Avec les clés : ffprobe imprime les champs dans l'ordre de la structure,
+    // pas dans celui de la demande — les lire par leur nom, pas par leur rang.
+    '-of',
+    'default=noprint_wrappers=1',
+    path,
+  ])
+  const field = (name: string) =>
+    Number(stdout.match(new RegExp(`^${name}=(.+)$`, 'm'))?.[1] ?? Number.NaN)
+  return (field('nb_read_packets') * 1024) / field('sample_rate')
+}
+
 test.group('download renditions — real ffmpeg pass (ADR-0009)', (group) => {
   const id = `test-dl-${Date.now()}`
   let sourcePath: string
@@ -87,11 +118,24 @@ test.group('download renditions — real ffmpeg pass (ADR-0009)', (group) => {
       // The measured byte size is the actual file, and it is real audio.
       assert.isAbove(rendition.bytes, 0, `${rendition.name} is non-empty`)
 
-      // Each prefix is decodable AAC (ADTS), and its duration is honest — the
-      // spike #183 property that keeps the client's seek bar truthful.
+      // Each prefix is decodable AAC (ADTS) — the spike #183 property.
       assert.equal(await probeField(path, 'stream=codec_name'), 'aac', rendition.name)
-      const duration = Number(await probeField(path, 'stream=duration'))
-      assert.closeTo(duration, SOURCE_SECONDS, 0.5, `${rendition.name} duration honest`)
+
+      // Le son produit dure *exactement* ce que la source durait : c'est la
+      // durée que le webhook publiera (#54), et elle se compte en trames.
+      assert.closeTo(
+        await decodedSeconds(path),
+        SOURCE_SECONDS,
+        0.1,
+        `${rendition.name} : durée décodée exacte`
+      )
+
+      // L'estimation du conteneur, elle, n'est pas une mesure : borne large,
+      // et aucune promesse d'honnêteté — elle dérive de −0,9 % à +4,8 % selon
+      // le rendu (ADR-0009, amendement). Ne pas resserrer cette tolérance en
+      // croyant durcir le test : on ne durcirait qu'une estimation.
+      const estimee = Number(await probeField(path, 'stream=duration'))
+      assert.closeTo(estimee, SOURCE_SECONDS, 0.5, `${rendition.name} : estimation plausible`)
     }
 
     // Same source, same duration: a higher target bitrate must yield a bigger
