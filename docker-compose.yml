@@ -54,26 +54,45 @@ x-app: &app
 
 services:
   # One-shot: ensure the bucket exists on the external RustFS, then exit.
+  #
+  # The S3 client is AWS's own, not MinIO's `mc`: that image is no longer served
+  # publicly ("pull access denied for minio/mc", reproduced 21/10/2026), so this
+  # stack could not be brought up at all on a machine whose image cache is cold
+  # — invisible on the machines that still have it, broken for everyone else
+  # (#32). Same move as `server-portal` (its #392 / PR #393), and the policy
+  # below is byte-for-byte the one production posts via `scripts/rustfs-setup.mjs`
+  # of the `context` repo: two repos opening the same prefixes two different ways
+  # is the next outage.
+  #
+  # The tag is pinned on purpose: `latest` is the very trap being repaired here.
   createbucket:
-    image: minio/mc
+    image: amazon/aws-cli:2.38.1
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     environment:
       RUSTFS_ENDPOINT: ${RUSTFS_ENDPOINT:-http://host.docker.internal:9000}
-      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?set RUSTFS_ACCESS_KEY}
-      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?set RUSTFS_SECRET_KEY}
       RUSTFS_BUCKET: ${RUSTFS_BUCKET:-streaming-service}
+      # The AWS CLI only reads credentials under its own variable names.
+      AWS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:?set RUSTFS_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:?set RUSTFS_SECRET_KEY}
+      # A self-hosted store has no regions; S3 demands one in order to sign.
+      AWS_DEFAULT_REGION: ${RUSTFS_REGION:-us-east-1}
+    # The image's entrypoint is `aws`: replace it, the time to chain three calls.
+    # `set -e` is not decoration — `server` and `worker` wait on this container
+    # with `service_completed_successfully`, and a chain of `;` exits 0 even when
+    # the policy call failed, booting the app onto a bucket nobody opened.
     entrypoint:
       - /bin/sh
       - -c
       - >
-        until mc alias set rustfs "$$RUSTFS_ENDPOINT" "$$RUSTFS_ACCESS_KEY" "$$RUSTFS_SECRET_KEY" >/dev/null 2>&1; do
+        set -e;
+        until aws --endpoint-url "$$RUSTFS_ENDPOINT" s3api list-buckets >/dev/null 2>&1; do
           echo 'waiting for rustfs...'; sleep 2;
         done;
-        mc mb --ignore-existing "rustfs/$$RUSTFS_BUCKET";
-        mc anonymous set download "rustfs/$$RUSTFS_BUCKET/hls";
-        mc anonymous set download "rustfs/$$RUSTFS_BUCKET/dl";
-        mc anonymous set download "rustfs/$$RUSTFS_BUCKET/radio";
+        aws --endpoint-url "$$RUSTFS_ENDPOINT" s3api create-bucket --bucket "$$RUSTFS_BUCKET" 2>/dev/null
+        || echo "bucket $$RUSTFS_BUCKET already there";
+        aws --endpoint-url "$$RUSTFS_ENDPOINT" s3api put-bucket-policy --bucket "$$RUSTFS_BUCKET"
+        --policy "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"PublicReadSelectedPrefixes\",\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":[\"s3:GetObject\"],\"Resource\":[\"arn:aws:s3:::$$RUSTFS_BUCKET/hls/*\",\"arn:aws:s3:::$$RUSTFS_BUCKET/dl/*\",\"arn:aws:s3:::$$RUSTFS_BUCKET/radio/*\"]}]}";
         echo "bucket $$RUSTFS_BUCKET ready (hls/ + dl/ + radio/ public)";
 
   # One-shot: run migrations against the external Postgres, then exit. Booting
